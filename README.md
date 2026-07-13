@@ -80,6 +80,20 @@ The fixes, in order of impact:
 
 One thing to watch, not urgent: **Quick Note cards are drafted far less often than everything else** (~1.5% of legal-card appearances vs. 6-8%+ for other templates, and a ~1% win rate when played) — bots consistently prefer New Business for the same "raise a topic" job since it has higher Attack and is wild. That's arguably fine (Quick Note was always meant to be the cheap, low-power option per the GDD's own rationale), but if human playtesting finds nobody ever wants it, it's a candidate to buff (higher Attack) or cut.
 
+**Third pass: New Business was breaking real matches.** A real playthrough showed one bot win 6 straight rounds with New Business, including raising a topic, striking it, and immediately re-raising it — every other player got talked over every single round. Root cause: New Business (Attack 3, Decay 0) never got weaker no matter how often it won, while every other card that won accrued Decay and got progressively worse at winning priority. This prompted defining measurable "happy path" criteria from a design interview (see [HAPPY_PATH.md](HAPPY_PATH.md)) before tuning further, rather than guessing again — a match now scores "happy path" only if the Shared Agenda succeeds, no single card wins more than 1/3 of rounds, no player wins more than their fair share + 25 points, nobody gets shut out entirely, and 1-to-(N-1) players achieve their Hidden Agenda. That framework caught the problem precisely: baseline happy-path conformance was **0.5-2.8%** across player counts, with New Business the dominant card in 84-98% of matches.
+
+Fix: New Business Attack 3→2, Decay 0→1. Overtime kept Attack 3 (nerfing it too broke its actual job — reliably winning priority when the table needs Duration back) but also gained Decay 0→1, since it had the identical repeat-without-consequence property. Validated at 2000 games/config:
+
+| | Before | After |
+|---|---|---|
+| 2P happy path | 0.7% | 4.0% |
+| 4P happy path | 2.8% | **35.1%** |
+| 5P happy path | 1.0% | **37.4%** |
+| 8P happy path | 0.5% | **18.6%** |
+| New Business win-rate-when-chosen | ~53-54% | ~25% |
+
+Two known gaps this pass didn't close, both detailed in HAPPY_PATH.md: **2P conformance is still low (4%)** — looks structural to having only 2 players (little contention/diversity by nature) rather than a New Business-specific problem, and probably needs the GDD's own "2P intense mode" concept, not implemented here. **8P matches hit the round safety cap more often now (2.3%→28.6%)**, though they're much happier when they do resolve (0.5%→18.6%) — compressing Attack values closer together means more ties and slower resolution with 8P's already-thin 3-card personal decks.
+
 Full per-scenario reports are written to `sim-results/*.txt` (gitignored — regenerate with `npm run simulate`).
 
 ## Engine assumptions (GDD gaps I filled in — please correct these)

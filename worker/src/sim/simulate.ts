@@ -16,6 +16,7 @@ import {
 export interface MatchStats {
   numPlayers: number;
   rounds: number;
+  roundsWithWinner: number;
   sharedAgendaSuccess: boolean;
   approvedCount: number;
   endReason: string;
@@ -28,6 +29,8 @@ export interface MatchStats {
   cardChosenCounts: Map<string, number>;
   cardWinCounts: Map<string, number>;
   cardBounceCounts: Map<string, number>;
+  playerWinCounts: Map<string, number>;
+  hiddenAgendaAchieverCount: number;
   overtimeUses: number;
   bounces: number;
   hitSafetyCap: boolean;
@@ -37,6 +40,7 @@ function emptyStats(numPlayers: number): MatchStats {
   return {
     numPlayers,
     rounds: 0,
+    roundsWithWinner: 0,
     sharedAgendaSuccess: false,
     approvedCount: 0,
     endReason: "",
@@ -49,6 +53,8 @@ function emptyStats(numPlayers: number): MatchStats {
     cardChosenCounts: new Map(),
     cardWinCounts: new Map(),
     cardBounceCounts: new Map(),
+    playerWinCounts: new Map(),
+    hiddenAgendaAchieverCount: 0,
     overtimeUses: 0,
     bounces: 0,
     hitSafetyCap: false,
@@ -93,18 +99,16 @@ export function simulateOneMatch(numPlayers: number, deck: CardDef[], config: Ga
 
     if (!allCommitted(state)) break;
     const reveal = resolveRound(state);
-    for (const play of reveal.plays) {
-      if (play.isWinner) {
-        if (play.success) bump(stats.cardWinCounts, play.cardId);
-        else {
-          bump(stats.cardBounceCounts, play.cardId);
-          stats.bounces++;
-        }
+    const winningPlay = reveal.plays.find((p) => p.isWinner);
+    if (winningPlay) {
+      stats.roundsWithWinner++;
+      bump(stats.playerWinCounts, winningPlay.playerId);
+      if (winningPlay.success) bump(stats.cardWinCounts, winningPlay.cardId);
+      else {
+        bump(stats.cardBounceCounts, winningPlay.cardId);
+        stats.bounces++;
       }
-    }
-    const winningCard = reveal.plays.find((p) => p.isWinner);
-    if (winningCard && state.deckById.get(winningCard.cardId)?.verb === "Overtime") {
-      stats.overtimeUses++;
+      if (state.deckById.get(winningPlay.cardId)?.verb === "Overtime") stats.overtimeUses++;
     }
   }
 
@@ -114,6 +118,7 @@ export function simulateOneMatch(numPlayers: number, deck: CardDef[], config: Ga
     stats.sharedAgendaSuccess = state.endSummary.sharedAgendaSuccess;
     stats.approvedCount = state.endSummary.approvedCount;
     stats.endReason = state.endSummary.reason;
+    stats.hiddenAgendaAchieverCount = state.endSummary.players.filter((p) => p.hiddenAgendaSuccess).length;
   } else {
     stats.endReason = "did-not-terminate";
   }

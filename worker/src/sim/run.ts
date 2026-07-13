@@ -2,6 +2,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { CardDef, GameConfig } from "../../../shared/types";
 import { DEFAULT_CONFIG, DEFAULT_DECK } from "../../../shared/cards";
+import { evaluateHappyPath } from "./happyPath";
 import { MatchStats, simulateOneMatch } from "./simulate";
 
 interface ScenarioConfig {
@@ -51,7 +52,9 @@ function runScenario(scenario: ScenarioConfig, verbose = true) {
   lines.push(`\n=== ${scenario.label} ===`);
   lines.push(`Deck size: ${scenario.deck.length} | Hand size: ${scenario.config.handSize} | Starting Duration: ${scenario.config.startingDuration}`);
 
+  const deckById = new Map(scenario.deck.map((c) => [c.id, c]));
   const byPlayerCount: Record<number, MatchStats[]> = {};
+  const happyRateByPlayerCount: Record<number, number> = {};
 
   for (const numPlayers of scenario.playerCounts) {
     const results: MatchStats[] = [];
@@ -84,6 +87,26 @@ function runScenario(scenario: ScenarioConfig, verbose = true) {
       `    Decision space: avg ${avgLegal.toFixed(2)} legal cards/turn | 0-legal ${pct(zeroLegal, totalDecisions)} | ` +
         `1-legal ${pct(oneLegal, totalDecisions)} | 2+legal ${pct(twoPlusLegal, totalDecisions)}`
     );
+
+    const happyResults = results.map((r) => evaluateHappyPath(r, deckById));
+    const happyCount = happyResults.filter((h) => h.isHappy).length;
+    const failureCounts = new Map<string, number>();
+    for (const h of happyResults) for (const f of h.failedCriteria) failureCounts.set(f, (failureCounts.get(f) ?? 0) + 1);
+    const failureStr = [...failureCounts.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .map(([reason, n]) => `${reason} ${pct(n, results.length)}`)
+      .join(", ");
+    const avgMaxCardShare = mean(happyResults.map((h) => h.maxCardShare));
+    const dominantCardCounts = new Map<string, number>();
+    for (const h of happyResults) {
+      if (h.dominantCard && h.maxCardShare > 1 / 3) dominantCardCounts.set(h.dominantCard, (dominantCardCounts.get(h.dominantCard) ?? 0) + 1);
+    }
+    const topDominant = [...dominantCardCounts.entries()].sort((a, b) => b[1] - a[1])[0];
+
+    lines.push(`    Happy path: ${pct(happyCount, results.length)} of matches (avg max single-card win share ${(avgMaxCardShare * 100).toFixed(1)}%)`);
+    lines.push(`      Failed criteria: ${failureStr || "none"}`);
+    if (topDominant) lines.push(`      Most common dominant card (>33% share): ${topDominant[0]} in ${pct(topDominant[1], results.length)} of matches`);
+    happyRateByPlayerCount[numPlayers] = happyCount / results.length;
   }
 
   const allResults = Object.values(byPlayerCount).flat();
@@ -106,7 +129,7 @@ function runScenario(scenario: ScenarioConfig, verbose = true) {
 
   const report = lines.join("\n");
   console.log(report);
-  return report;
+  return { report, label: scenario.label, happyRateByPlayerCount };
 }
 
 function withOvertimeAttack(deck: CardDef[], attack: number): CardDef[] {
@@ -122,16 +145,39 @@ function withExtraNewBusiness(deck: CardDef[], extraCopies: number): CardDef[] {
   return [...deck, ...extras];
 }
 
+function withNewBusinessStats(deck: CardDef[], overrides: { attack?: number; decay?: number }): CardDef[] {
+  return deck.map((c) =>
+    c.name === "New Business" ? { ...c, attack: overrides.attack ?? c.attack, decay: overrides.decay ?? c.decay } : c
+  );
+}
+
+function withNewBusinessCopies(deck: CardDef[], totalCopies: number): CardDef[] {
+  const template = deck.find((c) => c.name === "New Business")!;
+  const withoutNB = deck.filter((c) => c.name !== "New Business");
+  const copies: CardDef[] = Array.from({ length: totalCopies }, (_, i) => ({ ...template, id: `NewBusiness${i}` }));
+  return [...withoutNB, ...copies];
+}
+
 function main() {
   const GAMES_PER_CONFIG = Number(process.env.SIM_GAMES ?? 800);
-  const PLAYER_COUNTS = [2, 4, 8];
+  const PLAYER_COUNTS = [2, 4, 5, 8];
 
-  // withOvertimeAttack/withExtraNewBusiness are kept around as reusable levers for
-  // future balance experiments -- the current tuning from the first pass is already
-  // baked into DEFAULT_DECK/DEFAULT_CONFIG (shared/cards.ts), so this just runs that.
+  // withOvertimeAttack/withExtraNewBusiness/withNewBusinessStats/withNewBusinessCopies
+  // are kept as reusable levers for future balance experiments -- exploration history
+  // (New Business/Overtime attack 1-3, decay 0-2, copies 2-4) is in HAPPY_PATH.md and
+  // README.md. FINAL is the winner, baked into DEFAULT_DECK (shared/cards.ts).
   const scenarios: ScenarioConfig[] = [
     {
-      label: "CURRENT (deck-drafted, hand 5, Overtime atk 3, New Business x4)",
+      label: "BEFORE (New Business atk 3 decay 0, Overtime atk 3 decay 0)",
+      deck: DEFAULT_DECK.map((c) =>
+        c.name === "New Business" ? { ...c, attack: 3, decay: 0 } : c.id === "Overtime" ? { ...c, attack: 3, decay: 0 } : c
+      ),
+      config: DEFAULT_CONFIG,
+      playerCounts: PLAYER_COUNTS,
+      gamesPerPlayerCount: GAMES_PER_CONFIG,
+    },
+    {
+      label: "FINAL (New Business atk 2 decay 1, Overtime atk 3 decay 1)",
       deck: DEFAULT_DECK,
       config: DEFAULT_CONFIG,
       playerCounts: PLAYER_COUNTS,
@@ -139,12 +185,18 @@ function main() {
     },
   ];
 
-  const allReports = scenarios.map((s) => runScenario(s, true));
+  const results = scenarios.map((s) => runScenario(s, false));
+
+  console.log("\n\n=== Happy path conformance summary ===");
+  for (const r of results) {
+    const cells = PLAYER_COUNTS.map((n) => `${n}P ${((r.happyRateByPlayerCount[n] ?? 0) * 100).toFixed(1)}%`).join("  ");
+    console.log(`  ${r.label.padEnd(55)} ${cells}`);
+  }
 
   const outDir = path.join(__dirname, "..", "..", "..", "sim-results");
   fs.mkdirSync(outDir, { recursive: true });
   const outFile = path.join(outDir, `report-${new Date().toISOString().replace(/[:.]/g, "-")}.txt`);
-  fs.writeFileSync(outFile, allReports.join("\n\n"));
+  fs.writeFileSync(outFile, results.map((r) => r.report).join("\n\n"));
   console.log(`\nFull report written to ${outFile}`);
 }
 

@@ -100,9 +100,9 @@ const UNIVERSAL_CARDS: CardDef[] = [
     topic: null,
     verb: "NewBusiness",
     resultStatus: null,
-    attack: 3,
+    attack: 2,
     sustain: 1,
-    decay: 0,
+    decay: 1,
   },
   {
     id: "NewBusinessB",
@@ -112,9 +112,9 @@ const UNIVERSAL_CARDS: CardDef[] = [
     topic: null,
     verb: "NewBusiness",
     resultStatus: null,
-    attack: 3,
+    attack: 2,
     sustain: 1,
-    decay: 0,
+    decay: 1,
   },
   {
     id: "NewBusinessC",
@@ -124,9 +124,9 @@ const UNIVERSAL_CARDS: CardDef[] = [
     topic: null,
     verb: "NewBusiness",
     resultStatus: null,
-    attack: 3,
+    attack: 2,
     sustain: 1,
-    decay: 0,
+    decay: 1,
   },
   {
     id: "NewBusinessD",
@@ -136,9 +136,9 @@ const UNIVERSAL_CARDS: CardDef[] = [
     topic: null,
     verb: "NewBusiness",
     resultStatus: null,
-    attack: 3,
+    attack: 2,
     sustain: 1,
-    decay: 0,
+    decay: 1,
   },
   {
     id: "Overtime",
@@ -150,7 +150,7 @@ const UNIVERSAL_CARDS: CardDef[] = [
     resultStatus: null,
     attack: 3,
     sustain: 0,
-    decay: 0,
+    decay: 1,
   },
 ];
 
