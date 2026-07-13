@@ -2,6 +2,7 @@ import { CardDef } from "../../shared/types";
 import { Commit, GameState, PlayerState, RemoveEvent } from "./engine";
 
 export interface PersistedGameState {
+  matchId: string;
   phase: GameState["phase"];
   config: GameState["config"];
   deck: CardDef[];
@@ -24,6 +25,7 @@ export interface PersistedGameState {
 
 export function toPersisted(state: GameState): PersistedGameState {
   return {
+    matchId: state.matchId,
     phase: state.phase,
     config: state.config,
     deck: [...state.deckById.values()],
@@ -47,6 +49,7 @@ export function toPersisted(state: GameState): PersistedGameState {
 
 export function fromPersisted(p: PersistedGameState): GameState {
   return {
+    matchId: p.matchId,
     phase: p.phase,
     config: p.config,
     deckById: new Map(p.deck.map((c) => [c.id, c])),

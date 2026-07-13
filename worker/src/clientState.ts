@@ -9,6 +9,7 @@ export function buildClientState(game: GameState, viewerId: string): ClientGameS
       id: p.id,
       name: p.name,
       connected: p.connected,
+      isBot: p.isBot,
       handCount: p.hand.length,
       decayPenalty: p.decayPenalty,
       seat: p.seat,

@@ -19,6 +19,7 @@ export interface PlayerState {
   name: string;
   seat: number;
   connected: boolean;
+  isBot: boolean;
   hand: string[]; // card ids
   decayPenalty: number;
   hiddenAgenda: HiddenAgenda;
@@ -37,6 +38,7 @@ export interface RemoveEvent {
 }
 
 export interface GameState {
+  matchId: string;
   phase: GamePhase;
   config: GameConfig;
   deckById: Map<string, CardDef>;
@@ -78,10 +80,11 @@ function mulberry32(seed: number): () => number {
 }
 
 export function createGame(
-  playerInputs: { id: string; name: string }[],
+  playerInputs: { id: string; name: string; isBot: boolean }[],
   deck: CardDef[],
   config: GameConfig,
-  seed = Date.now()
+  seed = Date.now(),
+  matchId = crypto.randomUUID()
 ): GameState {
   const rng = mulberry32(seed);
   const deckById = new Map(deck.map((c) => [c.id, c]));
@@ -109,6 +112,7 @@ export function createGame(
       name: p.name,
       seat,
       connected: true,
+      isBot: p.isBot,
       hand,
       decayPenalty: 0,
       hiddenAgenda,
@@ -116,6 +120,7 @@ export function createGame(
   });
 
   return {
+    matchId,
     phase: "commit",
     config,
     deckById,
@@ -164,7 +169,7 @@ function cardTopicMatches(card: CardDef, floor: Floor | null): boolean {
   return false;
 }
 
-function isLegal(card: CardDef, state: GameState): boolean {
+export function isLegal(card: CardDef, state: GameState): boolean {
   if (card.sustain > state.duration && card.verb !== "Overtime") return false;
   if (card.verb === "NewBusiness") {
     return TOPICS.some((t) => !state.minutes[t]);

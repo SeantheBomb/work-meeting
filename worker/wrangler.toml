@@ -14,10 +14,10 @@ class_name = "MeetingRoom"
 
 [[migrations]]
 tag = "v1"
-new_classes = ["MeetingRoom"]
+new_sqlite_classes = ["MeetingRoom"]
 
 [[d1_databases]]
 binding = "DB"
 database_name = "work-meeting-db"
-database_id = "REPLACE_ME_AFTER_D1_CREATE"
+database_id = "31070810-614b-49db-8f0c-112b93dac450"
 migrations_dir = "../migrations"

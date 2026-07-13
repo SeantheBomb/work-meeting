@@ -139,6 +139,22 @@ button:hover:not(:disabled) {
   opacity: 0.5;
 }
 
+.player-list li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.lobby-actions {
+  display: flex;
+  gap: 10px;
+}
+
+.remove-bot {
+  padding: 4px 10px;
+  font-size: 0.75rem;
+}
+
 /* Game header */
 .game-header {
   display: flex;

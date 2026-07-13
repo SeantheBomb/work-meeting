@@ -159,6 +159,8 @@ function renderConnecting(): string {
 function renderLobby(): string {
   const l = state.lobby!;
   const canStart = l.players.length >= 2;
+  const canAddBot = l.players.length < 8;
+  const isHost = l.youId === l.hostId;
   return `
     <div class="screen lobby">
       <h1>Meeting Lobby</h1>
@@ -168,12 +170,17 @@ function renderLobby(): string {
         ${l.players
           .map(
             (p) =>
-              `<li class="${p.connected ? "" : "disconnected"}">${esc(p.name)}${p.id === l.youId ? " (you)" : ""}${p.id === l.hostId ? " &mdash; host" : ""}</li>`
+              `<li class="${p.connected ? "" : "disconnected"}">${p.isBot ? "&#129302; " : ""}${esc(p.name)}${p.id === l.youId ? " (you)" : ""}${p.id === l.hostId ? " &mdash; host" : ""}
+                ${p.isBot && isHost ? `<button class="secondary remove-bot" data-action="remove-bot" data-player-id="${p.id}">Remove</button>` : ""}
+              </li>`
           )
           .join("")}
       </ul>
-      <p class="hint">2-8 people. Anyone can start once at least 2 have joined.</p>
-      <button data-action="start" ${canStart ? "" : "disabled"}>Start Meeting</button>
+      <p class="hint">2-8 people (bots welcome). Anyone can start once at least 2 have joined.</p>
+      <div class="lobby-actions">
+        <button data-action="start" ${canStart ? "" : "disabled"}>Start Meeting</button>
+        <button data-action="add-bot" class="secondary" ${canAddBot ? "" : "disabled"}>Add Bot</button>
+      </div>
     </div>
   `;
 }
@@ -280,7 +287,7 @@ function renderGame(g: ClientGameState): string {
             const isChair = i === g.chairSeat;
             const committed = g.committedPlayerIds.includes(p.id);
             return `<div class="player-chip ${p.connected ? "" : "disconnected"} ${p.id === you.id ? "you" : ""}">
-              ${isChair ? "&#128081; " : ""}${esc(p.name)} &middot; ${p.handCount} cards ${p.decayPenalty ? `&middot; -${p.decayPenalty} atk` : ""}
+              ${isChair ? "&#128081; " : ""}${p.isBot ? "&#129302; " : ""}${esc(p.name)} &middot; ${p.handCount} cards ${p.decayPenalty ? `&middot; -${p.decayPenalty} atk` : ""}
               ${committed ? ' <span class="committed-dot">&#10003;</span>' : ""}
             </div>`;
           })
@@ -427,6 +434,11 @@ function attachHandlers() {
         state.conn?.send({ type: "commit", cardId: null });
       } else if (action === "restart") {
         state.conn?.send({ type: "restart" });
+      } else if (action === "add-bot") {
+        state.conn?.send({ type: "add-bot" });
+      } else if (action === "remove-bot") {
+        const playerId = el.dataset.playerId!;
+        state.conn?.send({ type: "remove-bot", playerId });
       } else if (action === "pick-topic") {
         state.selectedTopic = el.dataset.topic as Topic;
         render();

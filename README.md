@@ -2,7 +2,7 @@
 
 A multiplayer social-deduction deckbuilder where players play conversation cards to Add, Rewrite, or Remove items on a shared meeting record ("the Minutes"). Based on the GDD (`Work-Meeting-GDD-v2-Final.md`), Sections 5-9 (the simulation-tuned core loop).
 
-This prototype implements **the core loop only**: Minutes/Floor/turn structure, the 28-card deck, Duration/Entrenchment/Decay, Shared + Hidden Agenda win conditions, real-time multiplayer (2-8 players) over WebSockets. It intentionally leaves out audio, the Section 16 post-match "incident report" (a simple end screen stands in for it), and Section 10 meta-progression (Workday/Career).
+This prototype implements **the core loop only**: Minutes/Floor/turn structure, the 28-card deck, Duration/Entrenchment/Decay, Shared + Hidden Agenda win conditions, real-time multiplayer (2-8 players, humans and bots) over WebSockets. It intentionally leaves out audio, the Section 16 post-match "incident report" (a simple end screen stands in for it), and Section 10 meta-progression (Workday/Career).
 
 ## Stack
 
@@ -10,6 +10,24 @@ This prototype implements **the core loop only**: Minutes/Floor/turn structure, 
 - **Client**: Vanilla TypeScript + Vite, plain HTML/CSS/DOM (no canvas renderer for this prototype).
 - **Data**: Cloudflare D1, `card_definitions` table + `game_config` table — lets you tune Attack/Sustain/Decay or starting Duration/hand size from the D1 dashboard without a redeploy of game logic.
 - Deployed as a single Worker with static assets (client build) + DO + D1 binding — one `wrangler deploy`.
+
+## Bots
+
+Add up to 8 (humans + bots combined) in the lobby with "Add Bot." Bots auto-commit every round the instant it's legal for them to, so a solo human never has to click anything on a bot's behalf — the room just resolves as soon as the human(s) commit. The bot in [`worker/src/bot.ts`](worker/src/bot.ts) is a simple heuristic, not adversarial search: it scores each legal card in hand by (a) whether it would push a Line Item to Approved (serves the Shared Agenda), (b) whether it serves the bot's own Hidden Agenda (chases Credit for `CreditOnApproved`/`CreditOnTwoPlusItems`, avoids Approving its own `TopicNeverApproved` topic, leans toward Removing items it doesn't hold Credit on for `ItemRemovedByOther`), with a small random jitter so bots vary run to run. It does not model or react to other players' hidden agendas — no bluffing or reading opponents.
+
+## Match log (balance & troubleshooting)
+
+Every match writes to two D1 tables (`migrations/0002_match_log.sql`):
+
+- **`matches`** — one row per match: room code, player/bot count, start/end time, final round count, Shared Agenda success, end reason, and a `players_json` blob with each player's Hidden Agenda and whether they achieved it.
+- **`match_events`** — one row per card played/passed/round-resolved: player, card, effective Attack, legal/illegal, won-the-floor or bounced, and the resulting log text.
+
+Query it from the D1 dashboard (Cloudflare dashboard → Workers & Pages → D1 → `work-meeting-db`) or from the CLI, e.g.:
+
+```
+npx wrangler d1 execute work-meeting-db --remote --command "SELECT shared_agenda_success, COUNT(*) FROM matches GROUP BY shared_agenda_success"
+npx wrangler d1 execute work-meeting-db --remote --command "SELECT card_name, COUNT(*) wins FROM match_events WHERE is_winner=1 AND success=1 GROUP BY card_name ORDER BY wins DESC"
+```
 
 ## Engine assumptions (GDD gaps I filled in — please correct these)
 

@@ -1,8 +1,11 @@
 import { DurableObject } from "cloudflare:workers";
 import { applyOverrides, DEFAULT_CONFIG, DEFAULT_DECK } from "../../shared/cards";
 import { ClientMessage, ServerMessage } from "../../shared/protocol";
+import { RoundReveal, Topic } from "../../shared/types";
+import { chooseBotCommit } from "./bot";
 import { buildClientState } from "./clientState";
 import { allCommitted, commitCard, createGame, GameState, resolveRound } from "./engine";
+import { logMatchEnd, logMatchStart, logRoundEvents } from "./matchLog";
 import { fromPersisted, PersistedGameState, toPersisted } from "./serialize";
 import type { Env } from "./index";
 
@@ -10,6 +13,7 @@ interface LobbyPlayer {
   id: string;
   name: string;
   connected: boolean;
+  isBot: boolean;
 }
 
 interface Attachment {
@@ -17,6 +21,17 @@ interface Attachment {
 }
 
 const MAX_PLAYERS = 8;
+
+const BOT_NAMES = [
+  "Kevin from IT (Bot)",
+  "Synergy Steve (Bot)",
+  "Kanban Ken (Bot)",
+  "Kai the Intern (Bot)",
+  "Autoreply Bot",
+  "Minutes-Taking Bot",
+  "Deirdre from Legal (Bot)",
+  "Standup Stan (Bot)",
+];
 
 export class MeetingRoom extends DurableObject<Env> {
   private game: GameState | null = null;
@@ -85,7 +100,7 @@ export class MeetingRoom extends DurableObject<Env> {
       this.send(ws, {
         type: "lobby",
         roomCode: this.roomCode,
-        players: this.lobby.map((p) => ({ id: p.id, name: p.name, connected: p.connected })),
+        players: this.lobby.map((p) => ({ id: p.id, name: p.name, connected: p.connected, isBot: p.isBot })),
         youId: att.playerId,
         hostId: this.hostId ?? "",
       });
@@ -102,7 +117,7 @@ export class MeetingRoom extends DurableObject<Env> {
     }
   }
 
-  private broadcastReveal(reveal: import("../../shared/types").RoundReveal) {
+  private broadcastReveal(reveal: RoundReveal) {
     for (const ws of this.ctx.getWebSockets()) {
       const att = ws.deserializeAttachment() as Attachment | null;
       if (!att) continue;
@@ -166,6 +181,10 @@ export class MeetingRoom extends DurableObject<Env> {
       await this.handleCommit(att.playerId, msg.cardId, msg.targetTopic);
     } else if (msg.type === "restart") {
       await this.handleRestart();
+    } else if (msg.type === "add-bot") {
+      await this.handleAddBot();
+    } else if (msg.type === "remove-bot") {
+      await this.handleRemoveBot(msg.playerId);
     }
   }
 
@@ -194,10 +213,32 @@ export class MeetingRoom extends DurableObject<Env> {
         this.send(ws, { type: "error", message: "This meeting is full (8 people is already too many)." });
         return;
       }
-      this.lobby.push({ id: playerId, name: name || "New Hire", connected: true });
+      this.lobby.push({ id: playerId, name: name || "New Hire", connected: true, isBot: false });
       if (!this.hostId) this.hostId = playerId;
     }
     ws.serializeAttachment({ playerId } satisfies Attachment);
+    await this.saveLobby();
+    this.broadcastLobby();
+  }
+
+  private async handleAddBot() {
+    if (this.game) return;
+    this.lobby = this.lobby ?? [];
+    if (this.lobby.length >= MAX_PLAYERS) return;
+    const usedNames = new Set(this.lobby.map((p) => p.name));
+    const available = BOT_NAMES.filter((n) => !usedNames.has(n));
+    const name = available.length > 0 ? available[Math.floor(Math.random() * available.length)] : `Bot #${this.lobby.length + 1}`;
+    this.lobby.push({ id: `bot-${crypto.randomUUID()}`, name, connected: true, isBot: true });
+    await this.saveLobby();
+    this.broadcastLobby();
+  }
+
+  private async handleRemoveBot(playerId: string) {
+    if (this.game) return;
+    if (!this.lobby) return;
+    const target = this.lobby.find((p) => p.id === playerId);
+    if (!target || !target.isBot) return;
+    this.lobby = this.lobby.filter((p) => p.id !== playerId);
     await this.saveLobby();
     this.broadcastLobby();
   }
@@ -211,7 +252,7 @@ export class MeetingRoom extends DurableObject<Env> {
     }
     const [deck, config] = await Promise.all([this.loadDeck(), this.loadConfig()]);
     this.game = createGame(
-      this.lobby.map((p) => ({ id: p.id, name: p.name })),
+      this.lobby.map((p) => ({ id: p.id, name: p.name, isBot: p.isBot })),
       deck,
       config
     );
@@ -221,10 +262,11 @@ export class MeetingRoom extends DurableObject<Env> {
     }
     await this.saveGame();
     await this.ctx.storage.delete("lobby");
-    this.broadcastGameState();
+    await logMatchStart(this.env.DB, this.roomCode, this.game);
+    await this.advanceWithBots();
   }
 
-  private async handleCommit(playerId: string, cardId: string | null, targetTopic?: import("../../shared/types").Topic) {
+  private async handleCommit(playerId: string, cardId: string | null, targetTopic?: Topic) {
     if (!this.game) return;
     const result = commitCard(this.game, playerId, cardId, targetTopic);
     if (!result.ok) {
@@ -232,22 +274,44 @@ export class MeetingRoom extends DurableObject<Env> {
       if (ws) this.send(ws, { type: "error", message: result.error });
       return;
     }
-    if (allCommitted(this.game)) {
+    await this.advanceWithBots();
+  }
+
+  /** Auto-commits any bot players still pending in the current round, resolves the
+   * round once everyone (human + bot) is in, and repeats -- so a room with only one
+   * connected human still advances every round without the human touching bot turns.
+   * Chain-resolves multiple rounds in a row only if every remaining player is a bot. */
+  private async advanceWithBots() {
+    if (!this.game) return;
+    let guard = 0;
+    while (this.game.phase === "commit" && guard++ < 100) {
+      for (const player of this.game.players.values()) {
+        if (player.isBot && !this.game.commits.has(player.id)) {
+          const choice = chooseBotCommit(this.game, player.id);
+          commitCard(this.game, player.id, choice.cardId, choice.targetTopic);
+        }
+      }
+      if (!allCommitted(this.game)) break;
       const reveal = resolveRound(this.game);
+      await logRoundEvents(this.env.DB, this.game.matchId, reveal);
       await this.saveGame();
       this.broadcastReveal(reveal);
       this.broadcastGameState();
-    } else {
-      await this.saveGame();
-      this.broadcastGameState();
+      const phaseNow: string = this.game.phase;
+      if (phaseNow === "ended") {
+        await logMatchEnd(this.env.DB, this.game);
+        break;
+      }
     }
+    await this.saveGame();
+    this.broadcastGameState();
   }
 
   private async handleRestart() {
     if (!this.game || this.game.phase !== "ended") return;
     this.lobby = this.game.seatOrder.map((id) => {
       const p = this.game!.players.get(id)!;
-      return { id: p.id, name: p.name, connected: p.connected };
+      return { id: p.id, name: p.name, connected: p.connected, isBot: p.isBot };
     });
     this.hostId = this.hostId ?? this.lobby[0]?.id ?? null;
     this.game = null;

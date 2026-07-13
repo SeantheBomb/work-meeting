@@ -4,12 +4,15 @@ export type ClientMessage =
   | { type: "join"; playerId: string; name: string }
   | { type: "start" }
   | { type: "commit"; cardId: string | null; targetTopic?: Topic }
-  | { type: "restart" };
+  | { type: "restart" }
+  | { type: "add-bot" }
+  | { type: "remove-bot"; playerId: string };
 
 export interface LobbyPlayerView {
   id: string;
   name: string;
   connected: boolean;
+  isBot: boolean;
 }
 
 export interface YouView {
@@ -24,6 +27,7 @@ export interface PlayerPublicView {
   id: string;
   name: string;
   connected: boolean;
+  isBot: boolean;
   handCount: number;
   decayPenalty: number;
   seat: number;
