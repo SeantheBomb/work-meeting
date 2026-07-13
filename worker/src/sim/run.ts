@@ -89,6 +89,15 @@ function runScenario(scenario: ScenarioConfig, verbose = true) {
         `1-legal ${pct(oneLegal, totalDecisions)} | 2+legal ${pct(twoPlusLegal, totalDecisions)}`
     );
 
+    const approveSuccess = results.reduce((a, r) => a + r.approveOutcomes.success, 0);
+    const approveTotal = results.reduce((a, r) => a + r.approveOutcomes.total, 0);
+    const blockSuccess = results.reduce((a, r) => a + r.blockOutcomes.success, 0);
+    const blockTotal = results.reduce((a, r) => a + r.blockOutcomes.total, 0);
+    lines.push(
+      `    Hidden Agenda by stance: Approve win rate ${pct(approveSuccess, approveTotal)} (n=${approveTotal}) | ` +
+        `Block win rate ${pct(blockSuccess, blockTotal)} (n=${blockTotal})`
+    );
+
     const happyResults = results.map((r) => evaluateHappyPath(r, deckById));
     const happyCount = happyResults.filter((h) => h.isHappy).length;
     const failureCounts = new Map<string, number>();
@@ -184,16 +193,7 @@ function main() {
   // README.md. FINAL is the winner, baked into DEFAULT_DECK (shared/cards.ts).
   const scenarios: ScenarioConfig[] = [
     {
-      label: "BEFORE (New Business atk 3 decay 0, Overtime atk 3 decay 0)",
-      deck: DEFAULT_DECK.map((c) =>
-        c.name === "New Business" ? { ...c, attack: 3, decay: 0 } : c.id === "Overtime" ? { ...c, attack: 3, decay: 0 } : c
-      ),
-      config: DEFAULT_CONFIG,
-      playerCounts: PLAYER_COUNTS,
-      gamesPerPlayerCount: GAMES_PER_CONFIG,
-    },
-    {
-      label: "FINAL (New Business atk 2 decay 1, Overtime atk 3 decay 1, Pressure threshold 3)",
+      label: "CURRENT (shipped config, checking Hidden Agenda stance balance)",
       deck: DEFAULT_DECK,
       config: DEFAULT_CONFIG,
       playerCounts: PLAYER_COUNTS,

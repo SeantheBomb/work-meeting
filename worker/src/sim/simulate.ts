@@ -31,6 +31,8 @@ export interface MatchStats {
   cardBounceCounts: Map<string, number>;
   playerWinCounts: Map<string, number>;
   hiddenAgendaAchieverCount: number;
+  approveOutcomes: { success: number; total: number };
+  blockOutcomes: { success: number; total: number };
   overtimeUses: number;
   bounces: number;
   hitSafetyCap: boolean;
@@ -55,6 +57,8 @@ function emptyStats(numPlayers: number): MatchStats {
     cardBounceCounts: new Map(),
     playerWinCounts: new Map(),
     hiddenAgendaAchieverCount: 0,
+    approveOutcomes: { success: 0, total: 0 },
+    blockOutcomes: { success: 0, total: 0 },
     overtimeUses: 0,
     bounces: 0,
     hitSafetyCap: false,
@@ -119,6 +123,11 @@ export function simulateOneMatch(numPlayers: number, deck: CardDef[], config: Ga
     stats.approvedCount = state.endSummary.approvedCount;
     stats.endReason = state.endSummary.reason;
     stats.hiddenAgendaAchieverCount = state.endSummary.players.filter((p) => p.hiddenAgendaSuccess).length;
+    for (const p of state.endSummary.players) {
+      const bucket = p.hiddenAgenda.stance === "Approve" ? stats.approveOutcomes : stats.blockOutcomes;
+      bucket.total++;
+      if (p.hiddenAgendaSuccess) bucket.success++;
+    }
   } else {
     stats.endReason = "did-not-terminate";
   }
