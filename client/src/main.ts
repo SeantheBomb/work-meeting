@@ -127,7 +127,9 @@ function render() {
   else if (state.screen === "connecting") app.innerHTML = renderConnecting();
   else if (state.screen === "lobby") app.innerHTML = renderLobby();
   else if (state.screen === "game" && state.game) {
-    app.innerHTML = state.game.phase === "ended" ? renderEnd(state.game) : renderGame(state.game);
+    if (state.game.phase === "ended") app.innerHTML = renderEnd(state.game);
+    else if (state.game.phase === "draft") app.innerHTML = renderDraft(state.game);
+    else app.innerHTML = renderGame(state.game);
   }
   if (state.reveal && state.revealVisible) {
     app.insertAdjacentHTML("beforeend", renderRevealOverlay(state.reveal));
@@ -147,7 +149,10 @@ function renderHelpModal(): string {
           <button class="secondary" data-action="close-help">Got it</button>
         </div>
         <div class="help-body">
-          <p>Everyone's in the same meeting, sharing the same agenda. Everyone also has a private <strong>Hidden Agenda</strong> they'll never say out loud (yours is shown in the hand panel once the meeting starts).</p>
+          <p>Everyone's in the same meeting, sharing the same agenda. Everyone also has a private <strong>Hidden Agenda</strong> they'll never say out loud.</p>
+
+          <h3>Drafting your deck</h3>
+          <p>Before the meeting starts, you're told your Hidden Agenda and the whole table takes turns drafting cards, one at a time, into a personal deck (everyone can see the shared pool and who's picking what &mdash; once a card is taken, it's gone for everyone else). Build your deck around your Hidden Agenda. You only draw from and play the cards you drafted for the rest of the match.</p>
 
           <h3>The Minutes</h3>
           <p>There are 5 Topics: Budget, Timeline, Personnel, Strategy, Operations. Each one moves through stages as people play cards on it: <strong>Raised &rarr; Disputed &rarr; Tabled &rarr; Approved</strong>. The table wins together if <strong>any 2 Topics reach Approved</strong> &mdash; that's the Shared Agenda.</p>
@@ -315,6 +320,66 @@ function renderMinutesBoard(g: ClientGameState): string {
           </div>
         `;
       }).join("")}
+    </div>
+  `;
+}
+
+function renderDraft(g: ClientGameState): string {
+  const d = g.draft!;
+  const you = g.you;
+  const isYourTurn = d.turnPlayerId === you.id;
+  const turnPlayerName = d.turnPlayerId ? g.players.find((p) => p.id === d.turnPlayerId)?.name ?? "?" : null;
+
+  const groups: { label: string; cards: CardDef[] }[] = [
+    ...TOPIC_ORDER.map((t) => ({ label: t, cards: d.pool.filter((c) => c.topic === t) })),
+    { label: "Universal", cards: d.pool.filter((c) => c.topic === null) },
+  ].filter((grp) => grp.cards.length > 0);
+
+  return `
+    <div class="screen draft">
+      <div class="title-row">
+        <h1>Draft Your Deck</h1>
+        <button class="secondary help-btn" data-action="open-help">?</button>
+      </div>
+      <div class="hidden-agenda draft-agenda">Your Hidden Agenda: <strong>${hiddenAgendaLabel(you.hiddenAgenda)}</strong> <span class="hint">(private &mdash; draft around it, don't say it out loud)</span></div>
+
+      <div class="draft-status">
+        ${
+          isYourTurn
+            ? `<div class="draft-turn you">Your pick (${d.yourDeck.length}/${d.deckSize})</div>`
+            : `<div class="draft-turn">Waiting on ${esc(turnPlayerName ?? "...")}&rsquo;s pick&hellip;</div>`
+        }
+      </div>
+
+      <section class="players-panel">
+        ${d.playerPickCounts
+          .map((p) => `<div class="player-chip ${p.playerId === d.turnPlayerId ? "you" : ""}">${esc(p.playerName)} &middot; ${p.count}/${d.deckSize}</div>`)
+          .join("")}
+      </section>
+
+      <div class="draft-layout">
+        <div class="draft-pool">
+          ${groups
+            .map(
+              (grp) => `
+            <div class="draft-group">
+              <div class="draft-group-label" style="color:${topicColor(grp.cards[0]?.topic ?? null)}">${grp.label}</div>
+              <div class="draft-cards">
+                ${grp.cards.map((c) => renderCard(c, { faded: !isYourTurn })).join("")}
+              </div>
+            </div>
+          `
+            )
+            .join("")}
+        </div>
+
+        <div class="draft-your-deck">
+          <h3>Your deck so far (${d.yourDeck.length}/${d.deckSize})</h3>
+          <div class="draft-deck-list">
+            ${d.yourDeck.map((c) => `<div class="draft-deck-chip" style="--topic-color:${topicColor(c.topic)}">${esc(c.name)} <span class="hint">${c.topic ?? "Universal"}</span></div>`).join("") || `<p class="hint">Nothing yet.</p>`}
+          </div>
+        </div>
+      </div>
     </div>
   `;
 }
@@ -543,6 +608,16 @@ function attachHandlers() {
       render();
     });
   });
+
+  const draft = state.game?.draft;
+  if (draft && draft.turnPlayerId === state.game?.you.id) {
+    app.querySelectorAll<HTMLElement>(".draft-cards .card").forEach((el) => {
+      el.addEventListener("click", () => {
+        const id = el.dataset.cardId!;
+        state.conn?.send({ type: "draft-pick", cardId: id });
+      });
+    });
+  }
 }
 
 render();

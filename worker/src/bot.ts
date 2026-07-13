@@ -1,4 +1,4 @@
-import { CardDef, Topic, TOPICS } from "../../shared/types";
+import { CardDef, HiddenAgenda, Topic, TOPICS } from "../../shared/types";
 import { GameState, isLegal, PlayerState } from "./engine";
 
 /**
@@ -87,4 +87,50 @@ export function chooseBotCommit(state: GameState, playerId: string): { cardId: s
     return { cardId: best.id, targetTopic: pickTopicForNewBusiness(state, player) };
   }
   return { cardId: best.id };
+}
+
+/**
+ * Draft-time card evaluation. There's no board state yet, so this scores raw power
+ * (Attack + Sustain) plus fit with the bot's own Hidden Agenda, and mildly penalizes
+ * stacking too many cards on one Topic so the bot doesn't draft itself into a corner
+ * where it can only ever act on one thread of the Minutes.
+ */
+function scoreDraftPick(card: CardDef, alreadyDrafted: CardDef[], hiddenAgenda: HiddenAgenda): number {
+  let score = card.attack + card.sustain * 0.6;
+
+  if (card.verb === "NewBusiness" || card.verb === "Overtime") score += 2;
+
+  if (card.resultStatus === "Approved") {
+    if (hiddenAgenda.type === "CreditOnApproved" || hiddenAgenda.type === "CreditOnTwoPlusItems") score += 4;
+    if (hiddenAgenda.type === "TopicNeverApproved" && card.topic === hiddenAgenda.targetTopic) score -= 6;
+  }
+  if (card.verb === "Remove") {
+    if (hiddenAgenda.type === "TopicNeverApproved" && card.topic === hiddenAgenda.targetTopic) score += 4;
+    if (hiddenAgenda.type === "ItemRemovedByOther") score += 1;
+  }
+
+  if (card.topic) {
+    const sameTopicCount = alreadyDrafted.filter((c) => c.topic === card.topic).length;
+    score -= sameTopicCount * 1.5;
+  }
+
+  score += (Math.random() - 0.5) * 2;
+  return score;
+}
+
+export function chooseBotDraftPick(state: GameState, playerId: string): string {
+  const player = state.players.get(playerId)!;
+  const pool = state.draftPool.map((id) => state.deckById.get(id)!);
+  const alreadyDrafted = player.personalDeck.map((id) => state.deckById.get(id)!);
+
+  let best = pool[0];
+  let bestScore = -Infinity;
+  for (const card of pool) {
+    const s = scoreDraftPick(card, alreadyDrafted, player.hiddenAgenda);
+    if (s > bestScore) {
+      bestScore = s;
+      best = card;
+    }
+  }
+  return best.id;
 }

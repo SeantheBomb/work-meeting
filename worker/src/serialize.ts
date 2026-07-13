@@ -8,8 +8,10 @@ export interface PersistedGameState {
   deck: CardDef[];
   players: [string, PlayerState][];
   seatOrder: string[];
-  drawPile: string[];
-  discardPile: string[];
+  draftPool: string[];
+  draftPickNumber: number;
+  draftDeckSize: number;
+  draftPicks: GameState["draftPicks"];
   minutes: GameState["minutes"];
   floor: GameState["floor"];
   duration: number;
@@ -31,8 +33,10 @@ export function toPersisted(state: GameState): PersistedGameState {
     deck: [...state.deckById.values()],
     players: [...state.players.entries()],
     seatOrder: state.seatOrder,
-    drawPile: state.drawPile,
-    discardPile: state.discardPile,
+    draftPool: state.draftPool,
+    draftPickNumber: state.draftPickNumber,
+    draftDeckSize: state.draftDeckSize,
+    draftPicks: state.draftPicks,
     minutes: state.minutes,
     floor: state.floor,
     duration: state.duration,
@@ -55,8 +59,10 @@ export function fromPersisted(p: PersistedGameState): GameState {
     deckById: new Map(p.deck.map((c) => [c.id, c])),
     players: new Map(p.players),
     seatOrder: p.seatOrder,
-    drawPile: p.drawPile,
-    discardPile: p.discardPile,
+    draftPool: p.draftPool,
+    draftPickNumber: p.draftPickNumber,
+    draftDeckSize: p.draftDeckSize,
+    draftPicks: p.draftPicks,
     minutes: p.minutes,
     floor: p.floor,
     duration: p.duration,

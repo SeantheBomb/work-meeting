@@ -21,6 +21,9 @@ export interface PlayerState {
   connected: boolean;
   isBot: boolean;
   hand: string[]; // card ids
+  personalDeck: string[]; // card ids drafted for this match, fixed once the draft ends
+  drawPile: string[];
+  discardPile: string[];
   decayPenalty: number;
   hiddenAgenda: HiddenAgenda;
 }
@@ -44,8 +47,10 @@ export interface GameState {
   deckById: Map<string, CardDef>;
   players: Map<string, PlayerState>;
   seatOrder: string[]; // playerId by seat
-  drawPile: string[];
-  discardPile: string[];
+  draftPool: string[]; // card ids not yet drafted by anyone
+  draftPickNumber: number;
+  draftDeckSize: number; // cards each player drafts, clamped to deck size / player count
+  draftPicks: { playerId: string; cardId: string }[];
   minutes: Partial<Record<Topic, LineItem>>;
   floor: Floor | null;
   duration: number;
@@ -79,7 +84,14 @@ function mulberry32(seed: number): () => number {
   };
 }
 
-export function createGame(
+function effectiveHandSize(state: GameState): number {
+  return Math.max(1, Math.min(state.config.handSize, state.draftDeckSize));
+}
+
+/** Starts the draft: assigns seats and Hidden Agendas (revealed to each player right
+ * away, per Sean's request, so they can draft around it), and opens the full deck as
+ * a shared, visible pool that players pick from in turn. */
+export function beginDraft(
   playerInputs: { id: string; name: string; isBot: boolean }[],
   deck: CardDef[],
   config: GameConfig,
@@ -88,20 +100,13 @@ export function createGame(
 ): GameState {
   const rng = mulberry32(seed);
   const deckById = new Map(deck.map((c) => [c.id, c]));
-  const shuffled = shuffle(
-    deck.map((c) => c.id),
-    rng
-  );
+  const numPlayers = Math.max(1, playerInputs.length);
+  const draftDeckSize = Math.max(1, Math.min(config.draftDeckSize, Math.floor(deck.length / numPlayers)));
 
   const seatOrder = playerInputs.map((p) => p.id);
   const players = new Map<string, PlayerState>();
-  const handSize = Math.max(1, Math.min(config.handSize, Math.floor(deck.length / Math.max(1, playerInputs.length))));
-
-  let cursor = 0;
   const hiddenAgendaTypes = shuffle(HIDDEN_AGENDA_TYPES, rng);
   playerInputs.forEach((p, seat) => {
-    const hand = shuffled.slice(cursor, cursor + handSize);
-    cursor += handSize;
     const agendaType = hiddenAgendaTypes[seat % hiddenAgendaTypes.length];
     const hiddenAgenda: HiddenAgenda =
       agendaType === "TopicNeverApproved"
@@ -113,7 +118,10 @@ export function createGame(
       seat,
       connected: true,
       isBot: p.isBot,
-      hand,
+      hand: [],
+      personalDeck: [],
+      drawPile: [],
+      discardPile: [],
       decayPenalty: 0,
       hiddenAgenda,
     });
@@ -121,24 +129,77 @@ export function createGame(
 
   return {
     matchId,
-    phase: "commit",
+    phase: "draft",
     config,
     deckById,
     players,
     seatOrder,
-    drawPile: shuffled.slice(cursor),
-    discardPile: [],
+    draftPool: shuffle(
+      deck.map((c) => c.id),
+      rng
+    ),
+    draftPickNumber: 0,
+    draftDeckSize,
+    draftPicks: [],
     minutes: {},
     floor: null,
     duration: config.startingDuration,
-    round: 1,
+    round: 0,
     chairSeat: 0,
     overtimeUses: 0,
     fatigue: 0,
     commits: new Map(),
-    log: [{ round: 0, text: "The meeting has started. Someone should probably take minutes." }],
+    log: [],
     removeEvents: [],
   };
+}
+
+/** Snake draft: seat order reverses each full round so nobody is stuck picking last every time. */
+export function draftTurnPlayerId(state: GameState): string | null {
+  const numPlayers = state.seatOrder.length;
+  const totalPicks = state.draftDeckSize * numPlayers;
+  if (state.draftPickNumber >= totalPicks) return null;
+  const round = Math.floor(state.draftPickNumber / numPlayers);
+  const indexInRound = state.draftPickNumber % numPlayers;
+  const seat = round % 2 === 0 ? indexInRound : numPlayers - 1 - indexInRound;
+  return state.seatOrder[seat];
+}
+
+export function isDraftComplete(state: GameState): boolean {
+  return state.phase === "draft" && draftTurnPlayerId(state) === null;
+}
+
+export function draftPick(state: GameState, playerId: string, cardId: string): { ok: true } | { ok: false; error: string } {
+  if (state.phase !== "draft") return { ok: false, error: "Not in the draft phase." };
+  const turnPlayerId = draftTurnPlayerId(state);
+  if (turnPlayerId !== playerId) return { ok: false, error: "Not your turn to draft." };
+  if (!state.draftPool.includes(cardId)) return { ok: false, error: "That card isn't available." };
+  const player = state.players.get(playerId);
+  if (!player) return { ok: false, error: "Unknown player." };
+  state.draftPool = state.draftPool.filter((id) => id !== cardId);
+  player.personalDeck.push(cardId);
+  state.draftPickNumber += 1;
+  state.draftPicks.push({ playerId, cardId });
+  return { ok: true };
+}
+
+/** Ends the draft: shuffles each player's drafted cards into their own draw pile and
+ * deals their opening hand. From here on every player draws only from the cards they
+ * personally drafted -- there is no shared deck during play. */
+export function finalizeDraft(state: GameState, seed = Date.now()) {
+  const rng = mulberry32(seed);
+  const handSize = effectiveHandSize(state);
+  for (const player of state.players.values()) {
+    player.drawPile = shuffle(player.personalDeck, rng);
+    player.discardPile = [];
+    player.hand = [];
+    while (player.hand.length < handSize && player.drawPile.length > 0) {
+      player.hand.push(player.drawPile.pop()!);
+    }
+  }
+  state.phase = "commit";
+  state.round = 1;
+  state.log.push({ round: 0, text: "The meeting has started. Someone should probably take minutes." });
 }
 
 export function commitCard(
@@ -199,13 +260,14 @@ function seatDistance(seat: number, fromSeat: number, numSeats: number): number 
 
 function drawUpTo(state: GameState, playerId: string) {
   const player = state.players.get(playerId)!;
-  while (player.hand.length < state.config.handSize) {
-    if (state.drawPile.length === 0) {
-      if (state.discardPile.length === 0) return;
-      state.drawPile = shuffle(state.discardPile, Math.random);
-      state.discardPile = [];
+  const handSize = effectiveHandSize(state);
+  while (player.hand.length < handSize) {
+    if (player.drawPile.length === 0) {
+      if (player.discardPile.length === 0) return;
+      player.drawPile = shuffle(player.discardPile, Math.random);
+      player.discardPile = [];
     }
-    const drawn = state.drawPile.pop();
+    const drawn = player.drawPile.pop();
     if (!drawn) return;
     player.hand.push(drawn);
   }
@@ -242,7 +304,6 @@ export function resolveRound(state: GameState): RoundReveal {
   }
 
   const round = state.round;
-  const allPlayedCardIds = [...state.commits.values()].filter((c) => c.cardId !== null).map((c) => c.cardId!) as string[];
 
   if (candidates.length === 0) {
     const everyonePassedWithCardsInHand =
@@ -254,7 +315,7 @@ export function resolveRound(state: GameState): RoundReveal {
       endGame(state, "awkward-silence");
       return { round, plays: allPlays, passed, outcomeText };
     }
-    advanceRound(state, allPlayedCardIds);
+    advanceRound(state);
     checkEndConditions(state);
     return { round, plays: allPlays, passed, outcomeText };
   }
@@ -334,7 +395,7 @@ export function resolveRound(state: GameState): RoundReveal {
     state.log.push({ round, text: `Talked over: ${talkedOver.join(", ")}.` });
   }
 
-  advanceRound(state, allPlayedCardIds);
+  advanceRound(state);
   checkEndConditions(state);
 
   return { round, plays: allPlays, passed, outcomeText: effectText };
@@ -361,12 +422,12 @@ function checkEndConditions(state: GameState): void {
   }
 }
 
-function advanceRound(state: GameState, playedCardIds: string[]) {
-  state.discardPile.push(...playedCardIds);
+function advanceRound(state: GameState) {
   for (const [playerId, commit] of state.commits.entries()) {
     if (commit.cardId !== null) {
       const player = state.players.get(playerId)!;
       player.hand = player.hand.filter((c) => c !== commit.cardId);
+      player.discardPile.push(commit.cardId);
       drawUpTo(state, playerId);
     }
   }

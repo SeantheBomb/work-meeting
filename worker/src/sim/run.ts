@@ -126,20 +126,14 @@ function main() {
   const GAMES_PER_CONFIG = Number(process.env.SIM_GAMES ?? 800);
   const PLAYER_COUNTS = [2, 4, 8];
 
-  const legalityFixedDeck = DEFAULT_DECK; // Rewrite/Remove no longer Floor-gated (see engine.ts isLegal)
-
+  // withOvertimeAttack/withExtraNewBusiness are kept around as reusable levers for
+  // future balance experiments -- the current tuning from the first pass is already
+  // baked into DEFAULT_DECK/DEFAULT_CONFIG (shared/cards.ts), so this just runs that.
   const scenarios: ScenarioConfig[] = [
     {
-      label: "BEFORE (legality fix only: hand 3, Overtime atk 5, New Business x2)",
-      deck: legalityFixedDeck,
+      label: "CURRENT (deck-drafted, hand 5, Overtime atk 3, New Business x4)",
+      deck: DEFAULT_DECK,
       config: DEFAULT_CONFIG,
-      playerCounts: PLAYER_COUNTS,
-      gamesPerPlayerCount: GAMES_PER_CONFIG,
-    },
-    {
-      label: "AFTER (final: hand 5, Overtime atk 3, New Business x4)",
-      deck: withExtraNewBusiness(withOvertimeAttack(legalityFixedDeck, 3), 2),
-      config: { ...DEFAULT_CONFIG, handSize: 5 },
       playerCounts: PLAYER_COUNTS,
       gamesPerPlayerCount: GAMES_PER_CONFIG,
     },

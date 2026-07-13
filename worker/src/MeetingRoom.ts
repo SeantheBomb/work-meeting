@@ -2,9 +2,19 @@ import { DurableObject } from "cloudflare:workers";
 import { applyOverrides, DEFAULT_CONFIG, DEFAULT_DECK } from "../../shared/cards";
 import { ClientMessage, ServerMessage } from "../../shared/protocol";
 import { RoundReveal, Topic } from "../../shared/types";
-import { chooseBotCommit } from "./bot";
+import { chooseBotCommit, chooseBotDraftPick } from "./bot";
 import { buildClientState } from "./clientState";
-import { allCommitted, commitCard, createGame, GameState, resolveRound } from "./engine";
+import {
+  allCommitted,
+  beginDraft,
+  commitCard,
+  draftPick,
+  draftTurnPlayerId,
+  finalizeDraft,
+  GameState,
+  isDraftComplete,
+  resolveRound,
+} from "./engine";
 import { logMatchEnd, logMatchStart, logRoundEvents } from "./matchLog";
 import { fromPersisted, PersistedGameState, toPersisted } from "./serialize";
 import type { Env } from "./index";
@@ -148,6 +158,7 @@ export class MeetingRoom extends DurableObject<Env> {
         startingDuration: map.get("startingDuration") ?? DEFAULT_CONFIG.startingDuration,
         handSize: map.get("handSize") ?? DEFAULT_CONFIG.handSize,
         roundSafetyCap: map.get("roundSafetyCap") ?? DEFAULT_CONFIG.roundSafetyCap,
+        draftDeckSize: map.get("draftDeckSize") ?? DEFAULT_CONFIG.draftDeckSize,
       };
     } catch {
       return DEFAULT_CONFIG;
@@ -177,6 +188,8 @@ export class MeetingRoom extends DurableObject<Env> {
 
     if (msg.type === "start") {
       await this.handleStart(att.playerId);
+    } else if (msg.type === "draft-pick") {
+      await this.handleDraftPick(att.playerId, msg.cardId);
     } else if (msg.type === "commit") {
       await this.handleCommit(att.playerId, msg.cardId, msg.targetTopic);
     } else if (msg.type === "restart") {
@@ -251,7 +264,7 @@ export class MeetingRoom extends DurableObject<Env> {
       return;
     }
     const [deck, config] = await Promise.all([this.loadDeck(), this.loadConfig()]);
-    this.game = createGame(
+    this.game = beginDraft(
       this.lobby.map((p) => ({ id: p.id, name: p.name, isBot: p.isBot })),
       deck,
       config
@@ -262,8 +275,44 @@ export class MeetingRoom extends DurableObject<Env> {
     }
     await this.saveGame();
     await this.ctx.storage.delete("lobby");
+    // Hidden Agendas are assigned as soon as the draft opens, so log the match now.
     await logMatchStart(this.env.DB, this.roomCode, this.game);
-    await this.advanceWithBots();
+    await this.advanceDraftWithBots();
+  }
+
+  /** Auto-picks for any bot whose turn it is in the draft, and repeats until it's a
+   * human's turn or the draft completes -- then hands off into the commit phase. */
+  private async advanceDraftWithBots() {
+    if (!this.game) return;
+    let guard = 0;
+    while (this.game.phase === "draft" && guard++ < 500) {
+      const turnPlayerId = draftTurnPlayerId(this.game);
+      if (turnPlayerId === null) break;
+      const player = this.game.players.get(turnPlayerId)!;
+      if (!player.isBot) break;
+      const cardId = chooseBotDraftPick(this.game, turnPlayerId);
+      draftPick(this.game, turnPlayerId, cardId);
+    }
+    if (this.game.phase === "draft" && isDraftComplete(this.game)) {
+      finalizeDraft(this.game);
+      await this.saveGame();
+      this.broadcastGameState();
+      await this.advanceWithBots();
+      return;
+    }
+    await this.saveGame();
+    this.broadcastGameState();
+  }
+
+  private async handleDraftPick(playerId: string, cardId: string) {
+    if (!this.game) return;
+    const result = draftPick(this.game, playerId, cardId);
+    if (!result.ok) {
+      const ws = this.findSocket(playerId);
+      if (ws) this.send(ws, { type: "error", message: result.error });
+      return;
+    }
+    await this.advanceDraftWithBots();
   }
 
   private async handleCommit(playerId: string, cardId: string | null, targetTopic?: Topic) {

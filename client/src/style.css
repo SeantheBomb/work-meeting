@@ -538,6 +538,97 @@ button:hover:not(:disabled) {
   }
 }
 
+/* Draft */
+.draft-agenda {
+  margin-bottom: 14px;
+}
+
+.draft-status {
+  margin-bottom: 14px;
+}
+
+.draft-turn {
+  background: var(--panel);
+  padding: 10px 14px;
+  border-radius: 8px;
+  font-size: 0.95rem;
+  color: var(--muted);
+}
+
+.draft-turn.you {
+  color: var(--accent);
+  font-weight: 700;
+  box-shadow: 0 0 0 1px var(--accent);
+}
+
+.draft-layout {
+  display: grid;
+  grid-template-columns: 1fr 260px;
+  gap: 16px;
+  align-items: start;
+}
+
+.draft-pool {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.draft-group-label {
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  font-weight: 700;
+  margin-bottom: 6px;
+}
+
+.draft-cards {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.draft-your-deck {
+  background: var(--panel);
+  border-radius: 10px;
+  padding: 14px;
+  position: sticky;
+  top: 16px;
+}
+
+.draft-your-deck h3 {
+  margin: 0 0 10px;
+  font-size: 0.9rem;
+  color: var(--muted);
+}
+
+.draft-deck-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 60vh;
+  overflow-y: auto;
+}
+
+.draft-deck-chip {
+  background: var(--panel-2);
+  border-left: 3px solid var(--topic-color);
+  border-radius: 4px;
+  padding: 6px 8px;
+  font-size: 0.82rem;
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+@media (max-width: 900px) {
+  .draft-layout {
+    grid-template-columns: 1fr;
+  }
+  .draft-your-deck {
+    position: static;
+  }
+}
+
 /* Help / tutorial */
 .title-row {
   display: flex;

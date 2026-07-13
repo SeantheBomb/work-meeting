@@ -1,6 +1,17 @@
 import { CardDef, GameConfig } from "../../../shared/types";
-import { chooseBotCommit } from "../bot";
-import { allCommitted, commitCard, createGame, GameState, isLegal, resolveRound } from "../engine";
+import { chooseBotCommit, chooseBotDraftPick } from "../bot";
+import {
+  allCommitted,
+  beginDraft,
+  commitCard,
+  draftPick,
+  draftTurnPlayerId,
+  finalizeDraft,
+  GameState,
+  isDraftComplete,
+  isLegal,
+  resolveRound,
+} from "../engine";
 
 export interface MatchStats {
   numPlayers: number;
@@ -53,7 +64,15 @@ function bump(map: Map<string, number>, key: string, by = 1) {
 export function simulateOneMatch(numPlayers: number, deck: CardDef[], config: GameConfig, seed: number): MatchStats {
   const stats = emptyStats(numPlayers);
   const players = Array.from({ length: numPlayers }, (_, i) => ({ id: `p${i}`, name: `Bot${i}`, isBot: true }));
-  const state: GameState = createGame(players, deck, config, seed);
+  const state: GameState = beginDraft(players, deck, config, seed);
+
+  let draftGuard = 0;
+  while (!isDraftComplete(state) && draftGuard++ < 5000) {
+    const turnPlayerId = draftTurnPlayerId(state)!;
+    const cardId = chooseBotDraftPick(state, turnPlayerId);
+    draftPick(state, turnPlayerId, cardId);
+  }
+  finalizeDraft(state, seed + 1);
 
   let guard = 0;
   while (state.phase === "commit" && guard++ < 500) {

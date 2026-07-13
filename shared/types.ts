@@ -55,6 +55,8 @@ export interface GameConfig {
   startingDuration: number;
   handSize: number;
   roundSafetyCap: number;
+  /** Cards each player drafts into their personal deck; auto-clamped to deck size / player count. */
+  draftDeckSize: number;
 }
 
 export interface LogEntry {
@@ -96,7 +98,7 @@ export interface PlayerPublic {
   seat: number;
 }
 
-export type GamePhase = "lobby" | "commit" | "reveal" | "ended";
+export type GamePhase = "lobby" | "draft" | "commit" | "ended";
 
 export interface EndSummaryPlayer {
   id: string;

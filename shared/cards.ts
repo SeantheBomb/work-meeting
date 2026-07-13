@@ -161,6 +161,7 @@ export const DEFAULT_CONFIG = {
   startingDuration: 30,
   handSize: 5,
   roundSafetyCap: 40,
+  draftDeckSize: 10,
 };
 
 export function applyOverrides(

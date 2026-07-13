@@ -1,5 +1,24 @@
-import { ClientGameState } from "../../shared/protocol";
-import { GameState } from "./engine";
+import { ClientGameState, DraftView } from "../../shared/protocol";
+import { draftTurnPlayerId, GameState } from "./engine";
+
+function buildDraftView(game: GameState, viewerId: string): DraftView {
+  const me = game.players.get(viewerId)!;
+  const recentPicks = game.draftPicks.slice(-8).map((p) => {
+    const player = game.players.get(p.playerId)!;
+    return { playerId: p.playerId, playerName: player.name, cardId: p.cardId };
+  });
+  return {
+    pool: game.draftPool.map((id) => game.deckById.get(id)!),
+    deckSize: game.draftDeckSize,
+    turnPlayerId: draftTurnPlayerId(game),
+    yourDeck: me.personalDeck.map((id) => game.deckById.get(id)!),
+    playerPickCounts: game.seatOrder.map((id) => {
+      const p = game.players.get(id)!;
+      return { playerId: p.id, playerName: p.name, count: p.personalDeck.length };
+    }),
+    recentPicks,
+  };
+}
 
 export function buildClientState(game: GameState, viewerId: string): ClientGameState {
   const me = game.players.get(viewerId)!;
@@ -24,8 +43,11 @@ export function buildClientState(game: GameState, viewerId: string): ClientGameS
       hand: me.hand.map((cid) => game.deckById.get(cid)!),
       hiddenAgenda: me.hiddenAgenda,
       decayPenalty: me.decayPenalty,
+      drawPileCount: me.drawPile.length,
+      discardPileCount: me.discardPile.length,
     },
     players,
+    draft: game.phase === "draft" ? buildDraftView(game, viewerId) : undefined,
     minutes: game.minutes,
     floor: game.floor,
     duration: game.duration,
@@ -37,7 +59,5 @@ export function buildClientState(game: GameState, viewerId: string): ClientGameS
     committedPlayerIds: [...game.commits.keys()],
     config: game.config,
     endSummary: game.endSummary,
-    drawPileCount: game.drawPile.length,
-    discardPileCount: game.discardPile.length,
   };
 }

@@ -2,9 +2,15 @@
 
 A multiplayer social-deduction deckbuilder where players play conversation cards to Add, Rewrite, or Remove items on a shared meeting record ("the Minutes"). Based on the GDD (`Work-Meeting-GDD-v2-Final.md`), Sections 5-9 (the simulation-tuned core loop).
 
-This prototype implements **the core loop only**: Minutes/Floor/turn structure, the deck, Duration/Entrenchment/Decay, Shared + Hidden Agenda win conditions, real-time multiplayer (2-8 players, humans and bots) over WebSockets. It intentionally leaves out audio, the Section 16 post-match "incident report" (a simple end screen stands in for it), and Section 10 meta-progression (Workday/Career).
+This prototype implements **the core loop only**: a deck-building draft, Minutes/Floor/turn structure, the deck, Duration/Entrenchment/Decay, Shared + Hidden Agenda win conditions, real-time multiplayer (2-8 players, humans and bots) over WebSockets. It intentionally leaves out audio, the Section 16 post-match "incident report" (a simple end screen stands in for it), and Section 10 meta-progression (Workday/Career).
 
 New players get a "How to Play" walkthrough (auto-opens once, reachable any time from the `?`/"How to Play" button) and a dismissible in-hand hint for their first two rounds explaining legal-vs-illegal cards. Every card shows a plain-English effect line in addition to its flavor text, and Rewrite/Remove cards show the live target Entrenchment and whether the play would currently succeed or bounce.
+
+## Deck-building draft
+
+Every meeting opens with a draft, not a random deal. As soon as you start the meeting, everyone is told their Hidden Agenda, then the whole table takes turns (a snake draft — pick order reverses each round so nobody is stuck picking last every time) drafting cards one at a time into a personal deck from the shared, fully-visible pool. Once a card is taken, it's gone for everyone else — the scarcity that makes Entrenchment interesting is preserved, it's just allocated by choice instead of random deal. From then on you only ever draw from, and discard back into, the deck you built.
+
+Deck size defaults to 10 cards per player, auto-clamped down at high player counts so the math never asks for more cards than exist (`min(config.draftDeckSize, floor(deckSize / playerCount))` — e.g. 8 players share a 30-card pool, so everyone drafts 3). Tunable in D1 `game_config`. Bots draft too, using a simple heuristic in [`worker/src/bot.ts`](worker/src/bot.ts) (`chooseBotDraftPick`) that favors raw power (Attack + Sustain), fit with their own Hidden Agenda, and a mild push toward Topic diversity so they don't draft themselves into a corner.
 
 ## Stack
 
@@ -62,14 +68,26 @@ The fixes, in order of impact:
 
 **8P games hit the 40-round safety cap 7-9% of the time** even after the fix — worth knowing about, not treated as broken. Median 8P games run 12-16 rounds (matches the GDD's own validated ~14.7), and 8-player tables naturally take longer to reach consensus; I left the cap as-is rather than guess at a fix for what reads as a legitimate long tail, not a stalemate loop (no other symptom of a dead-end state showed up in the card-usage data). Worth a look if human playtesting flags it as actually feeling stuck rather than just "this meeting ran long" (which, thematically, is somewhat the point).
 
+**Second pass, after adding the deck-building draft (replacing the shared random deal):** re-ran the same simulation at 2000 games/config to make sure giving players choice over their deck didn't reopen the decision-space problem or introduce new softlocks. It didn't — every number improved further, because players (and bots) now draft a sensible Topic spread instead of hoping a random deal gives them one, and each player's own discard pile reshuffles independently, so a small personal deck still gets reliable repeat access to your chosen cards:
+
+| | Shared random deal | Personal drafted deck |
+|---|---|---|
+| 2P Shared Agenda success | 56.3% | **64.0%** |
+| 4P Shared Agenda success | 81.5% | **84.5%** |
+| 8P Shared Agenda success | 92.3% | **97.5%** |
+| 8P safety-cap rate | 7.8% | **2.5%** |
+| Overtime win-rate-when-chosen | 74.6% | 59.8% (healthier still) |
+
+One thing to watch, not urgent: **Quick Note cards are drafted far less often than everything else** (~1.5% of legal-card appearances vs. 6-8%+ for other templates, and a ~1% win rate when played) — bots consistently prefer New Business for the same "raise a topic" job since it has higher Attack and is wild. That's arguably fine (Quick Note was always meant to be the cheap, low-power option per the GDD's own rationale), but if human playtesting finds nobody ever wants it, it's a candidate to buff (higher Attack) or cut.
+
 Full per-scenario reports are written to `sim-results/*.txt` (gitignored — regenerate with `npm run simulate`).
 
 ## Engine assumptions (GDD gaps I filled in — please correct these)
 
 The GDD's Section 6 turn structure and Section 8 deck table left several mechanical details unspecified. I made the following calls; flag any that don't match your intent and I'll adjust:
 
-1. **The deck is a single shared pool** (30 cards — see Simulation findings above for why it grew from the GDD's stated 28), shuffled and dealt across the whole table (not per-player decks, no duplicates except the New Business copies). Played cards (won or fizzled) go to a discard pile; draw pile reshuffles from discard when empty.
-2. **Hand size**: 5 cards, refilled at the start of each round via the Draw step, clamped down automatically at high player counts so the initial deal never exceeds the deck (e.g. 8 players auto-clamps to hand size 3). Tunable in D1 `game_config`.
+1. **Each player builds their own deck via a draft** (see "Deck-building draft" above) from a shared 30-card pool (30, not the GDD's stated 28 — see Simulation findings for why) with no duplicates except the New Business copies. Played cards (won or fizzled) go to your own discard pile; your own draw pile reshuffles from your own discard when empty — decks are fully personal once the draft ends, not shared during play.
+2. **Hand size**: 5 cards, refilled at the start of each round via the Draw step, clamped down automatically so it never exceeds your own drafted deck size (e.g. 8 players auto-clamps draft deck size, and therefore hand size, to 3). Tunable in D1 `game_config`.
 3. **Starting Duration**: 30. Chosen to land near the simulation's validated ~11-15 round average meeting length. Tunable in D1.
 4. **Card-to-topic legality**: each per-topic card has a fixed `topic`. Add is legal any time its topic is untouched; Rewrite/Remove are legal any time their topic has an existing Line Item (see Simulation findings — this replaced an earlier, much more restrictive "must match the current Floor" rule that badly starved decision space). The Floor itself is still tracked and shown, but only as "what was most recently touched," not as a legality gate.
 5. **New Business**: wild — legal any time ≥1 topic is untouched, targets a topic of the player's choice.
