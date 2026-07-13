@@ -163,7 +163,7 @@ function renderHelpModal(): string {
           </ul>
 
           <h3>Legal vs illegal</h3>
-          <p>A card in your hand is only playable if its Topic is untouched (to raise it) or already has an item on it (to Rewrite/Remove it). Illegal cards look faded &mdash; you can still see them, just can't play them this round.</p>
+          <p>A card in your hand is only playable if its Topic is untouched (to raise it) or already has an item on it (to Rewrite/Remove it). Illegal cards look faded and say why &mdash; you can still see them, just can't play them this round. "Floor" up top is just what was most recently touched, for reference &mdash; it doesn't gate what's legal. That's why round 1 always starts with only Add-type cards (a topic's Quick Note, or New Business) playable: nothing exists yet to Rewrite or Remove.</p>
 
           <h3>Duration</h3>
           <p>A shared clock for the whole table. Winning plays spend it. If it runs out and nobody has a legal move left, the meeting's over &mdash; check the Shared Agenda and everyone's Hidden Agenda to see how it went.</p>
@@ -255,9 +255,19 @@ function cardIsLegalGuess(card: CardDef, g: ClientGameState): boolean {
   return false;
 }
 
+/** Explains why an illegal card is illegal right now, for display next to the card. Returns null if legal. */
+function illegalReason(card: CardDef, g: ClientGameState): string | null {
+  if (cardIsLegalGuess(card, g)) return null;
+  if (card.verb !== "Overtime" && card.sustain > g.duration) return `Needs ${card.sustain} Duration, only ${g.duration} left.`;
+  if (card.verb === "NewBusiness") return "Every topic has already been raised.";
+  if (card.verb === "Add") return `${card.topic} has already been raised.`;
+  if (card.verb === "Rewrite" || card.verb === "Remove") return `${card.topic} hasn't been raised yet — nothing to act on.`;
+  return null;
+}
+
 function renderCard(
   card: CardDef,
-  opts: { selected?: boolean; legal?: boolean; faded?: boolean; badge?: string; entrenchment?: number } = {}
+  opts: { selected?: boolean; legal?: boolean; faded?: boolean; badge?: string; entrenchment?: number; illegalReason?: string | null } = {}
 ): string {
   const cls = ["card"];
   if (opts.selected) cls.push("selected");
@@ -279,6 +289,7 @@ function renderCard(
           ? ` <strong>Target's Entrenchment: ${opts.entrenchment}</strong> (${card.sustain >= opts.entrenchment ? "would succeed" : "would bounce"})`
           : ""
       }</div>
+      ${opts.illegalReason ? `<div class="card-illegal-reason">Can't play: ${esc(opts.illegalReason)}</div>` : ""}
       <div class="card-flavor">${esc(card.flavorText)}</div>
     </div>
   `;
@@ -320,10 +331,17 @@ function renderGame(g: ClientGameState): string {
     <div class="screen game">
       <header class="game-header">
         <div class="meta">Room ${esc(g.config ? state.roomCode : state.roomCode)} &middot; Round ${g.round}</div>
+        <div class="floor">Floor: <strong>${g.floor ? `${g.floor.topic} &middot; ${g.floor.status}` : "none yet"}</strong></div>
         <div class="duration">Duration: <strong>${g.duration}</strong></div>
         <div class="fatigue">Fatigue: ${g.fatigue}</div>
         <button class="secondary help-btn" data-action="open-help">?</button>
       </header>
+
+      ${
+        Object.keys(g.minutes).length === 0
+          ? `<div class="board-note">Nothing's on the Minutes yet &mdash; only Add-type cards (a topic's Quick Note, or New Business) can go first. Once a topic exists, Rewrite/Remove cards for it open up.</div>`
+          : ""
+      }
 
       ${renderMinutesBoard(g)}
 
@@ -357,6 +375,7 @@ function renderGame(g: ClientGameState): string {
                       selected: c.id === state.selectedCardId,
                       legal: cardIsLegalGuess(c, g),
                       entrenchment: c.topic ? g.minutes[c.topic]?.entrenchment : undefined,
+                      illegalReason: illegalReason(c, g),
                     })
                   )
                   .join("")}

@@ -173,6 +173,20 @@ button:hover:not(:disabled) {
   font-size: 1.2rem;
 }
 
+.floor strong {
+  color: var(--text);
+}
+
+.board-note {
+  background: var(--panel);
+  border-left: 3px solid var(--accent);
+  border-radius: 6px;
+  padding: 10px 14px;
+  font-size: 0.85rem;
+  color: var(--muted);
+  margin-bottom: 14px;
+}
+
 /* Minutes board */
 .minutes-board {
   display: grid;
@@ -351,6 +365,12 @@ button:hover:not(:disabled) {
   margin-bottom: 8px;
   padding-bottom: 8px;
   border-bottom: 1px solid #3a3d47;
+}
+
+.card-illegal-reason {
+  font-size: 0.72rem;
+  color: var(--danger);
+  margin-bottom: 6px;
 }
 
 .card-effect strong {
