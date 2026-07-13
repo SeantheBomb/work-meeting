@@ -1,5 +1,5 @@
 import { CardDef } from "../../shared/types";
-import { Commit, GameState, PlayerState, RemoveEvent } from "./engine";
+import { Commit, GameState, Peek, PlayerState, RemoveEvent } from "./engine";
 
 export interface PersistedGameState {
   matchId: string;
@@ -22,6 +22,7 @@ export interface PersistedGameState {
   commits: [string, Commit][];
   log: GameState["log"];
   removeEvents: RemoveEvent[];
+  peeks: Peek[];
   endSummary: GameState["endSummary"];
 }
 
@@ -47,6 +48,7 @@ export function toPersisted(state: GameState): PersistedGameState {
     commits: [...state.commits.entries()],
     log: state.log,
     removeEvents: state.removeEvents,
+    peeks: state.peeks,
     endSummary: state.endSummary,
   };
 }
@@ -73,6 +75,7 @@ export function fromPersisted(p: PersistedGameState): GameState {
     commits: new Map(p.commits),
     log: p.log,
     removeEvents: p.removeEvents,
+    peeks: p.peeks ?? [],
     endSummary: p.endSummary,
   };
 }

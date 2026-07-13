@@ -45,6 +45,12 @@ export function buildClientState(game: GameState, viewerId: string): ClientGameS
       decayPenalty: me.decayPenalty,
       drawPileCount: me.drawPile.length,
       discardPileCount: me.discardPile.length,
+      knownAgendas: game.peeks
+        .filter((p) => p.viewerId === viewerId)
+        .map((p) => {
+          const about = game.players.get(p.aboutPlayerId)!;
+          return { playerId: about.id, playerName: about.name, agenda: about.hiddenAgenda };
+        }),
     },
     players,
     draft: game.phase === "draft" ? buildDraftView(game, viewerId) : undefined,

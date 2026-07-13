@@ -2,19 +2,19 @@
 
 A multiplayer social-deduction deckbuilder where players play conversation cards to Add, Rewrite, or Remove items on a shared meeting record ("the Minutes"). Based on the GDD (`Work-Meeting-GDD-v2-Final.md`), Sections 5-9 (the simulation-tuned core loop).
 
-This prototype implements **the core loop only**: a deck-building draft, Minutes/Floor/turn structure, the deck, Duration/Entrenchment/Decay, Shared + Hidden Agenda win conditions, real-time multiplayer (2-8 players, humans and bots) over WebSockets. It intentionally leaves out audio, the Section 16 post-match "incident report" (a simple end screen stands in for it), and Section 10 meta-progression (Workday/Career).
+This prototype implements **the core loop only**: a deck-building draft, Minutes/Floor/turn structure, the deck (main + side effects per card), Duration/Resolve/Decay/Pressure, adversarial Shared + Hidden Agenda win conditions, real-time multiplayer (2-8 players, humans and bots) over WebSockets. It intentionally leaves out audio, the Section 16 post-match "incident report" (a simple end screen stands in for it), and Section 10 meta-progression (Workday/Career).
 
-New players get a "How to Play" walkthrough (auto-opens once, reachable any time from the `?`/"How to Play" button) and a dismissible in-hand hint for their first two rounds explaining legal-vs-illegal cards. Every card shows a plain-English effect line in addition to its flavor text, and Rewrite/Remove cards show the live target Entrenchment and whether the play would currently succeed or bounce.
+New players get a "How to Play" walkthrough (auto-opens once, reachable any time from the `?`/"How to Play" button) and a dismissible in-hand hint for their first two rounds explaining legal-vs-illegal cards. Every card shows a plain-English effect line in addition to its flavor text, and Rewrite/Remove cards show the live target Resolve and whether the play would currently succeed or bounce. Full spec for the card/status/agenda/risk-reward redesign is in [DESIGN_NOTES.md](DESIGN_NOTES.md).
 
 ## Deck-building draft
 
-Every meeting opens with a draft, not a random deal. As soon as you start the meeting, everyone is told their Hidden Agenda, then the whole table takes turns (a snake draft — pick order reverses each round so nobody is stuck picking last every time) drafting cards one at a time into a personal deck from the shared, fully-visible pool. Once a card is taken, it's gone for everyone else — the scarcity that makes Entrenchment interesting is preserved, it's just allocated by choice instead of random deal. From then on you only ever draw from, and discard back into, the deck you built.
+Every meeting opens with a draft, not a random deal. As soon as you start the meeting, everyone is told their Hidden Agenda, then the whole table takes turns (a snake draft — pick order reverses each round so nobody is stuck picking last every time) drafting cards one at a time into a personal deck from the shared, fully-visible pool. Once a card is taken, it's gone for everyone else — the scarcity that makes Resolve interesting is preserved, it's just allocated by choice instead of random deal. From then on you only ever draw from, and discard back into, the deck you built.
 
 Deck size defaults to 10 cards per player, auto-clamped down at high player counts so the math never asks for more cards than exist (`min(config.draftDeckSize, floor(deckSize / playerCount))` — e.g. 8 players share a 30-card pool, so everyone drafts 3). Tunable in D1 `game_config`. Bots draft too, using a simple heuristic in [`worker/src/bot.ts`](worker/src/bot.ts) (`chooseBotDraftPick`) that favors raw power (Attack + Sustain), fit with their own Hidden Agenda, and a mild push toward Topic diversity so they don't draft themselves into a corner.
 
 ## Stack
 
-- **Worker**: Cloudflare Worker + Durable Objects (one `MeetingRoom` DO per room code), TypeScript. Server-authoritative — clients never determine their own priority or resolve entrenchment math.
+- **Worker**: Cloudflare Worker + Durable Objects (one `MeetingRoom` DO per room code), TypeScript. Server-authoritative — clients never determine their own priority or Resolve math.
 - **Client**: Vanilla TypeScript + Vite, plain HTML/CSS/DOM (no canvas renderer for this prototype).
 - **Data**: Cloudflare D1, `card_definitions` table + `game_config` table — lets you tune Attack/Sustain/Decay or starting Duration/hand size from the D1 dashboard without a redeploy of game logic.
 - Deployed as a single Worker with static assets (client build) + DO + D1 binding — one `wrangler deploy`.
@@ -94,7 +94,15 @@ Fix: New Business Attack 3→2, Decay 0→1. Overtime kept Attack 3 (nerfing it 
 
 Two known gaps this pass didn't close, both detailed in HAPPY_PATH.md: **2P conformance is still low (4%)** — looks structural to having only 2 players (little contention/diversity by nature) rather than a New Business-specific problem, and probably needs the GDD's own "2P intense mode" concept, not implemented here. **8P matches hit the round safety cap more often now (2.3%→28.6%)**, though they're much happier when they do resolve (0.5%→18.6%) — compressing Attack values closer together means more ties and slower resolution with 8P's already-thin 3-card personal decks.
 
+**Fourth pass: card variety, Status mechanics, adversarial agendas, risk/reward.** Full spec in [DESIGN_NOTES.md](DESIGN_NOTES.md) — the short version: every card now has a main effect plus a side effect (drawn from a 5-effect pool via a Latin square so every template × topic combination is unique), Entrenchment was renamed **Resolve** and each Status now modifies it differently (Disputed +1, Approved +2 and costs the remover extra Decay, Tabled decays 1/round automatically), talked-over Rewrite/Remove attempts now build **Pressure** toward a free Resolve reduction instead of doing nothing, and Hidden Agendas were redesigned as a single guaranteed-adversarial Approve/Block pair per Topic (no two players ever share one, and shared topics are always split in opposition). Re-validated against the same happy-path criteria at 2000 games/config: no regressions, 5P improved further (37.4%→44.7%). A new risk/reward measurement was also added (below) as the ongoing tool for future tuning passes.
+
 Full per-scenario reports are written to `sim-results/*.txt` (gitignored — regenerate with `npm run simulate`).
+
+## Risk/reward findings
+
+Every card gets a designed reward weight (DESIGN_NOTES.md section 5) and a *measured* risk score from simulation (`P(no effect | chosen)` — talked over or bounced). Goal: a real spectrum of safe/low-reward and risky/high-reward options, with no card strictly worse than another on both axes.
+
+First pass found a **+0.40 risk/reward correlation** (right direction — riskier cards do pay out more) but **22 of 30 cards came out "dominated"** by a same-or-lower-risk alternative with higher reward. Mostly this is because most topic cards cluster at 0.86-0.90 risk (winning any round depends heavily on what everyone else played, not just your card) while varying a lot in reward weight — a real signal that either Remove's reward weight is underrated relative to its risk, or the topic-card tier needs more differentiation. Not fixed this pass (the ask was to build the measurement); flagged for the next tuning round.
 
 ## Engine assumptions (GDD gaps I filled in — please correct these)
 
@@ -106,9 +114,10 @@ The GDD's Section 6 turn structure and Section 8 deck table left several mechani
 4. **Card-to-topic legality**: each per-topic card has a fixed `topic`. Add is legal any time its topic is untouched; Rewrite/Remove are legal any time their topic has an existing Line Item (see Simulation findings — this replaced an earlier, much more restrictive "must match the current Floor" rule that badly starved decision space). The Floor itself is still tracked and shown, but only as "what was most recently touched," not as a legality gate.
 5. **New Business**: wild — legal any time ≥1 topic is untouched, targets a topic of the player's choice.
 6. **Overtime ("Can I Just Add One More Thing")**: wild — always legal, no Topic/Status target, doesn't touch the Minutes. Diminishing +5/+3/+1 Duration tracked per meeting; adds 1 to a shared Fatigue counter (displayed, but Political Capital payout is out of scope for this prototype since meta-progression isn't built).
-7. **Hidden Agenda pool**: implemented the 4 examples listed in Section 7 verbatim, one assigned per player at random (non-exclusive, can repeat across players).
-8. **Fizzled/talked-over cards are discarded**, not returned to hand — otherwise there's no cost to committing a losing card every round.
+7. **Hidden Agenda pool**: replaced the GDD's 4 examples with a single guaranteed-adversarial pair (Approve a Topic / Block a Topic) per Sean's request that agendas never overlap and always contradict — see DESIGN_NOTES.md section 4 for why the original 4 types couldn't guarantee that.
+8. **Fizzled/talked-over cards are discarded**, not returned to hand — otherwise there's no cost to committing a losing card every round. They do add Pressure to their target now (DESIGN_NOTES.md section 3), so they're not entirely wasted.
 9. **Passing** keeps your hand as-is (no draw that round for you); "awkward silence" early end triggers when every player passes in the same round while at least one player still holds cards.
+10. **Side effects and per-Status Resolve modifiers** (DESIGN_NOTES.md sections 1-2) are code-level constants, not D1-tunable — they're structural rules (which side effect a card has, how much a Status boosts Resolve) rather than numeric dials like Attack/Sustain/Decay.
 
 ## Local dev
 

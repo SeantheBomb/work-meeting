@@ -1,4 +1,5 @@
 import {
+  AgendaStance,
   CardDef,
   EndSummary,
   Floor,
@@ -9,10 +10,11 @@ import {
   LogEntry,
   RevealPlay,
   RoundReveal,
+  SideEffectId,
+  Status,
   Topic,
   TOPICS,
 } from "../../shared/types";
-import { HIDDEN_AGENDA_TYPES } from "../../shared/hiddenAgenda";
 
 export interface PlayerState {
   id: string;
@@ -40,6 +42,11 @@ export interface RemoveEvent {
   round: number;
 }
 
+export interface Peek {
+  viewerId: string;
+  aboutPlayerId: string;
+}
+
 export interface GameState {
   matchId: string;
   phase: GamePhase;
@@ -61,6 +68,7 @@ export interface GameState {
   commits: Map<string, Commit>;
   log: LogEntry[];
   removeEvents: RemoveEvent[];
+  peeks: Peek[];
   endSummary?: EndSummary;
 }
 
@@ -88,6 +96,42 @@ function effectiveHandSize(state: GameState): number {
   return Math.max(1, Math.min(state.config.handSize, state.draftDeckSize));
 }
 
+/** Base Resolve for a freshly-written item is the card's Sustain, plus a per-Status
+ * modifier that gives each Status its own "flavor and challenge" (see DESIGN_NOTES.md
+ * section 1): Disputed items are actively defended (+1), Approved items are locked in
+ * and costly to undo (+2), Tabled items instead decay automatically over time (handled
+ * in advanceRound, not here), Raised gets no modifier -- fresh and undefended. */
+function statusResolveModifier(status: Status): number {
+  if (status === "Disputed") return 1;
+  if (status === "Approved") return 2;
+  return 0;
+}
+
+/** Assigns every player exactly one (topic, stance) pair. No two players ever share the
+ * identical pair; whenever 2+ players land on the same topic they're split as evenly as
+ * possible between Approve and Block, guaranteeing real opposition wherever agendas
+ * overlap (see DESIGN_NOTES.md section 4). At most 2 players share any one topic (so
+ * every pair is a clean Approve-vs-Block opposite) as long as numPlayers <= 2*TOPICS.length. */
+function assignHiddenAgendas(numPlayers: number, rng: () => number): HiddenAgenda[] {
+  const topicOrder = shuffle([...TOPICS], rng);
+  const playerOrder = shuffle(
+    Array.from({ length: numPlayers }, (_, i) => i),
+    rng
+  );
+  const stanceCountByTopicIndex = new Array(topicOrder.length).fill(0);
+  const startOffsetByTopicIndex = topicOrder.map(() => (rng() < 0.5 ? 0 : 1));
+  const assignments: HiddenAgenda[] = new Array(numPlayers);
+
+  playerOrder.forEach((playerIndex, i) => {
+    const topicIndex = i % topicOrder.length;
+    const nthOnTopic = stanceCountByTopicIndex[topicIndex]++;
+    const stance: AgendaStance = (nthOnTopic + startOffsetByTopicIndex[topicIndex]) % 2 === 0 ? "Approve" : "Block";
+    assignments[playerIndex] = { topic: topicOrder[topicIndex], stance };
+  });
+
+  return assignments;
+}
+
 /** Starts the draft: assigns seats and Hidden Agendas (revealed to each player right
  * away, per Sean's request, so they can draft around it), and opens the full deck as
  * a shared, visible pool that players pick from in turn. */
@@ -105,13 +149,8 @@ export function beginDraft(
 
   const seatOrder = playerInputs.map((p) => p.id);
   const players = new Map<string, PlayerState>();
-  const hiddenAgendaTypes = shuffle(HIDDEN_AGENDA_TYPES, rng);
+  const hiddenAgendas = assignHiddenAgendas(numPlayers, rng);
   playerInputs.forEach((p, seat) => {
-    const agendaType = hiddenAgendaTypes[seat % hiddenAgendaTypes.length];
-    const hiddenAgenda: HiddenAgenda =
-      agendaType === "TopicNeverApproved"
-        ? { type: agendaType, targetTopic: TOPICS[Math.floor(rng() * TOPICS.length)] }
-        : { type: agendaType };
     players.set(p.id, {
       id: p.id,
       name: p.name,
@@ -123,7 +162,7 @@ export function beginDraft(
       drawPile: [],
       discardPile: [],
       decayPenalty: 0,
-      hiddenAgenda,
+      hiddenAgenda: hiddenAgendas[seat],
     });
   });
 
@@ -151,6 +190,7 @@ export function beginDraft(
     commits: new Map(),
     log: [],
     removeEvents: [],
+    peeks: [],
   };
 }
 
@@ -228,7 +268,7 @@ export function allCommitted(state: GameState): boolean {
  * topic+status slot). An early simulation pass (see /sim-results) showed that rule
  * left 44-58% of all turns with zero legal cards and collapsed 2P/4P games via mass
  * "awkward silence" passes in ~3 rounds. Rewrite/Remove are now legal any time their
- * own topic has an existing Line Item; the real tension moved to the entrenchment
+ * own topic has an existing Line Item; the real tension moved to the Resolve
  * success/bounce check, which was always the interesting risk anyway. The Floor is
  * kept as pure display state (what was most recently touched) for narrative/UI, not
  * as a legality gate.
@@ -262,14 +302,68 @@ function drawUpTo(state: GameState, playerId: string) {
   const player = state.players.get(playerId)!;
   const handSize = effectiveHandSize(state);
   while (player.hand.length < handSize) {
-    if (player.drawPile.length === 0) {
-      if (player.discardPile.length === 0) return;
-      player.drawPile = shuffle(player.discardPile, Math.random);
-      player.discardPile = [];
+    if (!drawOne(state, playerId)) return;
+  }
+}
+
+/** Draws exactly one card for a player, reshuffling their discard into their draw pile
+ * if needed. Returns false if there were no cards anywhere to draw. Used both for the
+ * normal end-of-round refill and for the BonusDraw side effect (which draws beyond the
+ * normal hand-size cap). */
+function drawOne(state: GameState, playerId: string): boolean {
+  const player = state.players.get(playerId)!;
+  if (player.drawPile.length === 0) {
+    if (player.discardPile.length === 0) return false;
+    player.drawPile = shuffle(player.discardPile, Math.random);
+    player.discardPile = [];
+  }
+  const drawn = player.drawPile.pop();
+  if (!drawn) return false;
+  player.hand.push(drawn);
+  return true;
+}
+
+function addPressure(state: GameState, topic: Topic) {
+  const item = state.minutes[topic];
+  if (!item) return;
+  item.pressure += 1;
+  if (item.pressure >= state.config.pressureThreshold) {
+    item.pressure = 0;
+    item.resolve = Math.max(0, item.resolve - 1);
+  }
+}
+
+/** Applies a card's side effect. Triggers whenever the card wins priority, win or bounce
+ * (see DESIGN_NOTES.md section 2) -- even a losing Rewrite/Remove attempt still does
+ * something. Returns a short log fragment describing what happened, or null for Peek
+ * (private, not broadcast) and no-ops. */
+function applySideEffect(state: GameState, playerId: string, card: CardDef, actedTopic: Topic | null): string | null {
+  const player = state.players.get(playerId)!;
+  switch (card.sideEffect) {
+    case "BonusDraw":
+      return drawOne(state, playerId) ? `${player.name} drew a bonus card.` : null;
+    case "Peek": {
+      const others = state.seatOrder.filter((id) => id !== playerId);
+      if (others.length === 0) return null;
+      const aboutPlayerId = others[Math.floor(Math.random() * others.length)];
+      state.peeks.push({ viewerId: playerId, aboutPlayerId });
+      return null; // private -- no public log line
     }
-    const drawn = player.drawPile.pop();
-    if (!drawn) return;
-    player.hand.push(drawn);
+    case "Undermine": {
+      const candidates = (Object.values(state.minutes) as LineItem[]).filter((i) => i.topic !== actedTopic);
+      if (candidates.length === 0) return null;
+      candidates.sort((a, b) => b.resolve - a.resolve);
+      const target = candidates[0];
+      target.resolve = Math.max(0, target.resolve - 1);
+      return `${target.topic}'s Resolve was undermined by 1.`;
+    }
+    case "Rebate":
+      state.duration += 1;
+      return `${player.name} clawed back 1 Duration.`;
+    case "Deflect":
+      return null; // applied inline where Decay is added, since it needs to change the amount itself
+    default:
+      return null;
   }
 }
 
@@ -299,6 +393,7 @@ export function resolveRound(state: GameState): RoundReveal {
       legal,
       isWinner: false,
       success: true,
+      sideEffect: null,
     });
     if (legal) candidates.push({ playerId, card, effAttack, seat: player.seat });
   }
@@ -332,13 +427,21 @@ export function resolveRound(state: GameState): RoundReveal {
   const commit = state.commits.get(winner.playerId)!;
   const card = winner.card;
 
+  // Talked-over legal Rewrite/Remove attempts still wear down their target (Pressure).
+  for (const c of candidates) {
+    if (c === winner) continue;
+    if ((c.card.verb === "Rewrite" || c.card.verb === "Remove") && c.card.topic) {
+      addPressure(state, c.card.topic);
+    }
+  }
+
   let effectText = "";
   let success = true;
 
   if (card.verb === "NewBusiness") {
     const openTopics = TOPICS.filter((t) => !state.minutes[t]);
     const topic = commit.targetTopic && openTopics.includes(commit.targetTopic) ? commit.targetTopic : openTopics[0];
-    state.minutes[topic] = { topic, status: "Raised", credit: winner.playerId, entrenchment: card.sustain };
+    state.minutes[topic] = { topic, status: "Raised", credit: winner.playerId, resolve: card.sustain + statusResolveModifier("Raised"), pressure: 0 };
     state.floor = { topic, status: "Raised" };
     effectText = `${winnerPlayer.name} raised new business: ${topic}.`;
   } else if (card.verb === "Overtime") {
@@ -350,34 +453,37 @@ export function resolveRound(state: GameState): RoundReveal {
     effectText = `${winnerPlayer.name}: "Can I just add one more thing?" (+${bonus} Duration, +1 Fatigue)`;
   } else if (card.verb === "Add") {
     const topic = card.topic!;
-    state.minutes[topic] = { topic, status: "Raised", credit: winner.playerId, entrenchment: card.sustain };
+    state.minutes[topic] = { topic, status: "Raised", credit: winner.playerId, resolve: card.sustain + statusResolveModifier("Raised"), pressure: 0 };
     state.floor = { topic, status: "Raised" };
     effectText = `${winnerPlayer.name} raised ${topic}.`;
   } else if (card.verb === "Rewrite") {
     const topic = card.topic!;
     const item = state.minutes[topic]!;
-    if (card.sustain >= item.entrenchment) {
+    if (card.sustain >= item.resolve) {
       item.status = card.resultStatus!;
       item.credit = winner.playerId;
-      item.entrenchment = card.sustain;
+      item.resolve = card.sustain + statusResolveModifier(card.resultStatus!);
+      item.pressure = 0;
       state.floor = { topic, status: item.status };
       effectText = `${winnerPlayer.name} moved ${topic} to ${item.status}.`;
     } else {
       success = false;
-      item.entrenchment = Math.max(0, item.entrenchment - 1);
+      item.resolve = Math.max(0, item.resolve - 1);
       effectText = `${winnerPlayer.name}'s attempt to rewrite ${topic} bounced. It's a little easier to crack now.`;
     }
   } else if (card.verb === "Remove") {
     const topic = card.topic!;
     const item = state.minutes[topic]!;
-    if (card.sustain >= item.entrenchment) {
+    if (card.sustain >= item.resolve) {
+      const wasApproved = item.status === "Approved";
       state.removeEvents.push({ topic, removedCredit: item.credit, removedBy: winner.playerId, round: state.round });
       delete state.minutes[topic];
       if (state.floor?.topic === topic) state.floor = null;
-      effectText = `${winnerPlayer.name} struck ${topic} from the record.`;
+      if (wasApproved) winnerPlayer.decayPenalty += 1; // undoing a done deal costs extra
+      effectText = `${winnerPlayer.name} struck ${topic} from the record.${wasApproved ? " Undoing an Approved item cost extra Decay." : ""}`;
     } else {
       success = false;
-      item.entrenchment = Math.max(0, item.entrenchment - 1);
+      item.resolve = Math.max(0, item.resolve - 1);
       effectText = `${winnerPlayer.name}'s attempt to remove ${topic} bounced.`;
     }
   }
@@ -385,8 +491,14 @@ export function resolveRound(state: GameState): RoundReveal {
   if (card.verb !== "Overtime") {
     state.duration = Math.max(0, state.duration - card.sustain);
   }
-  winnerPlayer.decayPenalty += card.decay;
+  winnerPlayer.decayPenalty += card.sideEffect === "Deflect" ? Math.floor(card.decay / 2) : card.decay;
   if (winningPlay) winningPlay.success = success;
+
+  if (card.sideEffect) {
+    if (winningPlay) winningPlay.sideEffect = card.sideEffect;
+    const sideEffectText = applySideEffect(state, winner.playerId, card, card.topic);
+    if (sideEffectText) effectText += ` ${sideEffectText}`;
+  }
 
   state.log.push({ round, text: effectText });
 
@@ -434,6 +546,11 @@ function advanceRound(state: GameState) {
   state.commits.clear();
   state.round += 1;
   state.chairSeat = (state.chairSeat + 1) % state.seatOrder.length;
+
+  // Tabled items fade: their Resolve drops on its own each round they sit untouched.
+  for (const item of Object.values(state.minutes) as LineItem[]) {
+    if (item.status === "Tabled") item.resolve = Math.max(0, item.resolve - 1);
+  }
 }
 
 function checkSharedAgenda(state: GameState): boolean {
@@ -447,23 +564,9 @@ function endGame(state: GameState, reason: EndSummary["reason"]) {
 
   const players = [...state.players.values()].map((p) => {
     const creditedItems = (Object.values(state.minutes) as LineItem[]).filter((i) => i.credit === p.id);
-    let hiddenAgendaSuccess = false;
-    switch (p.hiddenAgenda.type) {
-      case "CreditOnApproved":
-        hiddenAgendaSuccess = approvedItems.some((i) => i.credit === p.id);
-        break;
-      case "CreditOnTwoPlusItems":
-        hiddenAgendaSuccess = creditedItems.length >= 2;
-        break;
-      case "TopicNeverApproved": {
-        const item = state.minutes[p.hiddenAgenda.targetTopic!];
-        hiddenAgendaSuccess = !item || item.status !== "Approved";
-        break;
-      }
-      case "ItemRemovedByOther":
-        hiddenAgendaSuccess = state.removeEvents.some((e) => e.removedCredit !== p.id);
-        break;
-    }
+    const item = state.minutes[p.hiddenAgenda.topic];
+    const isApproved = !!item && item.status === "Approved";
+    const hiddenAgendaSuccess = p.hiddenAgenda.stance === "Approve" ? isApproved : !isApproved;
     return {
       id: p.id,
       name: p.name,

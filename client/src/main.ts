@@ -1,5 +1,6 @@
 import { CardDef, RoundReveal, Topic } from "../../shared/types";
 import { ClientGameState, LobbyPlayerView, ServerMessage } from "../../shared/protocol";
+import { hiddenAgendaLabel } from "../../shared/hiddenAgenda";
 import { connect } from "./ws";
 
 const TOPIC_ORDER: Topic[] = ["Budget", "Timeline", "Personnel", "Strategy", "Operations"];
@@ -149,22 +150,33 @@ function renderHelpModal(): string {
           <button class="secondary" data-action="close-help">Got it</button>
         </div>
         <div class="help-body">
-          <p>Everyone's in the same meeting, sharing the same agenda. Everyone also has a private <strong>Hidden Agenda</strong> they'll never say out loud.</p>
+          <p>Everyone's in the same meeting, sharing the same agenda. Everyone also has a private <strong>Hidden Agenda</strong> they'll never say out loud &mdash; and it's built to put you at odds with at least one other player, whether you realize it or not.</p>
+
+          <h3>Hidden Agenda</h3>
+          <p>Yours is always one Topic plus a stance: <strong>Approve</strong> it (get it to Approved by the end) or <strong>Block</strong> it (keep it from ever reaching Approved). Nobody shares your exact Topic+stance, and whenever two players land on the same Topic, one is Approve and the other is Block &mdash; a guaranteed rival, even if you never find out who.</p>
 
           <h3>Drafting your deck</h3>
           <p>Before the meeting starts, you're told your Hidden Agenda and the whole table takes turns drafting cards, one at a time, into a personal deck (everyone can see the shared pool and who's picking what &mdash; once a card is taken, it's gone for everyone else). Build your deck around your Hidden Agenda. You only draw from and play the cards you drafted for the rest of the match.</p>
 
           <h3>The Minutes</h3>
-          <p>There are 5 Topics: Budget, Timeline, Personnel, Strategy, Operations. Each one moves through stages as people play cards on it: <strong>Raised &rarr; Disputed &rarr; Tabled &rarr; Approved</strong>. The table wins together if <strong>any 2 Topics reach Approved</strong> &mdash; that's the Shared Agenda.</p>
+          <p>There are 5 Topics: Budget, Timeline, Personnel, Strategy, Operations. Each moves through stages as people play cards on it, and each stage plays differently:</p>
+          <ul class="help-list">
+            <li><strong>Raised</strong> &mdash; fresh and undefended, easiest to challenge.</li>
+            <li><strong>Disputed</strong> &mdash; actively fought over, +1 Resolve (harder to overturn).</li>
+            <li><strong>Tabled</strong> &mdash; fading from memory: Resolve drops by 1 automatically every round it sits untouched.</li>
+            <li><strong>Approved</strong> &mdash; locked in, +2 Resolve, and Removing it costs the remover extra Decay &mdash; undoing a done deal is expensive.</li>
+          </ul>
+          <p>The table wins together if <strong>any 2 Topics reach Approved</strong> &mdash; that's the Shared Agenda.</p>
 
           <h3>Each round</h3>
-          <p>Everyone secretly picks one card (or Passes). Then everyone reveals at once. The card with the highest effective <strong>Attack</strong> wins the floor and actually happens &mdash; everyone else got talked over, no effect, no cost. Ties go to whoever is closest to the rotating Chair (&#128081;).</p>
+          <p>Everyone secretly picks one card (or Passes). Then everyone reveals at once. The card with the highest effective <strong>Attack</strong> wins the floor and actually happens &mdash; everyone else got talked over, no cost. Ties go to whoever is closest to the rotating Chair (&#128081;). Even a talked-over Rewrite/Remove attempt isn't wasted: it adds Pressure to its target, and at 3 Pressure the target's Resolve drops by 1 automatically.</p>
 
           <h3>Reading a card</h3>
           <ul class="help-list">
             <li>&#9889; <strong>Attack</strong> &mdash; how fast you jump in. Highest Attack wins the round.</li>
-            <li>&#9203; <strong>Sustain</strong> &mdash; if you win: spends that much of the shared Duration clock, and is the strength you're bringing. To Rewrite or Remove something, your Sustain must be &ge; its current <strong>Entrenchment</strong> or the attempt bounces (no change, but the target gets 1 easier to crack next time).</li>
+            <li>&#9203; <strong>Sustain</strong> &mdash; if you win: spends that much of the shared Duration clock, and is the strength you're bringing. To Rewrite or Remove something, your Sustain must be &ge; its current <strong>Resolve</strong> or the attempt bounces (no change, but the target gets 1 easier to crack next time).</li>
             <li>&#128564; <strong>Decay</strong> &mdash; winning with this card tires you out: it's subtracted from your Attack the next time you try to win with anything.</li>
+            <li>Most topic cards also carry a <strong>side effect</strong> (drawing extra cards, peeking at someone's Hidden Agenda, refunding Duration, and more) that fires whenever the card wins the floor, success or bounce &mdash; it's printed right on the card.</li>
           </ul>
 
           <h3>Legal vs illegal</h3>
@@ -272,13 +284,13 @@ function illegalReason(card: CardDef, g: ClientGameState): string | null {
 
 function renderCard(
   card: CardDef,
-  opts: { selected?: boolean; legal?: boolean; faded?: boolean; badge?: string; entrenchment?: number; illegalReason?: string | null } = {}
+  opts: { selected?: boolean; legal?: boolean; faded?: boolean; badge?: string; resolve?: number; illegalReason?: string | null } = {}
 ): string {
   const cls = ["card"];
   if (opts.selected) cls.push("selected");
   if (opts.legal === false) cls.push("illegal");
   if (opts.faded) cls.push("faded");
-  const needsEntrenchment = card.verb === "Rewrite" || card.verb === "Remove";
+  const needsResolve = card.verb === "Rewrite" || card.verb === "Remove";
   return `
     <div class="${cls.join(" ")}" data-card-id="${card.id}" style="--topic-color:${topicColor(card.topic)}">
       ${opts.badge ? `<div class="card-badge">${opts.badge}</div>` : ""}
@@ -286,12 +298,12 @@ function renderCard(
       <div class="card-name">${esc(card.name)}</div>
       <div class="card-stats">
         <span title="Attack: speed to win priority">&#9889; Atk ${card.attack}</span>
-        <span title="Sustain: costs this much Duration; also the entrenchment it sets or must beat">&#9203; Sus ${card.sustain}</span>
+        <span title="Sustain: costs this much Duration; also the Resolve it sets or must beat">&#9203; Sus ${card.sustain}</span>
         <span title="Decay: your own Attack penalty next time you win with this">&#128564; Dec ${card.decay}</span>
       </div>
       <div class="card-effect">${esc(card.effectText)}${
-        needsEntrenchment && opts.entrenchment !== undefined
-          ? ` <strong>Target's Entrenchment: ${opts.entrenchment}</strong> (${card.sustain >= opts.entrenchment ? "would succeed" : "would bounce"})`
+        needsResolve && opts.resolve !== undefined
+          ? ` <strong>Target's Resolve: ${opts.resolve}</strong> (${card.sustain >= opts.resolve ? "would succeed" : "would bounce"})`
           : ""
       }</div>
       ${opts.illegalReason ? `<div class="card-illegal-reason">Can't play: ${esc(opts.illegalReason)}</div>` : ""}
@@ -299,6 +311,13 @@ function renderCard(
     </div>
   `;
 }
+
+const STATUS_BLURB: Record<string, string> = {
+  Raised: "Fresh, undefended",
+  Disputed: "Actively fought over (+1 Resolve)",
+  Tabled: "Fading — Resolve drops 1/round untouched",
+  Approved: "Locked in (+2 Resolve; costly to undo)",
+};
 
 function renderMinutesBoard(g: ClientGameState): string {
   return `
@@ -313,8 +332,10 @@ function renderMinutesBoard(g: ClientGameState): string {
             ${
               item
                 ? `<div class="minutes-status status-${item.status}">${item.status}</div>
+                   <div class="minutes-status-blurb">${STATUS_BLURB[item.status]}</div>
                    <div class="minutes-credit">Credit: ${esc(creditName)}</div>
-                   <div class="minutes-entrenchment">Entrenchment: ${item.entrenchment}</div>`
+                   <div class="minutes-resolve">Resolve: ${item.resolve}</div>
+                   <div class="minutes-pressure">Pressure: ${item.pressure}/3</div>`
                 : `<div class="minutes-empty">Untouched</div>`
             }
           </div>
@@ -426,6 +447,13 @@ function renderGame(g: ClientGameState): string {
       <section class="hand-panel">
         <div class="hidden-agenda">Hidden Agenda: <strong>${hiddenAgendaLabel(you.hiddenAgenda)}</strong> <span class="hint">(private &mdash; don't say it out loud)</span></div>
         ${
+          you.knownAgendas.length > 0
+            ? `<div class="known-agendas">What you've learned: ${you.knownAgendas
+                .map((k) => `<strong>${esc(k.playerName)}</strong>: ${hiddenAgendaLabel(k.agenda)}`)
+                .join(" &middot; ")}</div>`
+            : ""
+        }
+        ${
           state.showHandHint && g.round <= 2 && !youCommitted
             ? `<div class="hand-hint">Full-color cards are legal to play this round; faded ones would get talked over. Pick one and hit Commit, or Pass if nothing fits. <button class="secondary" data-action="dismiss-hand-hint">Got it</button></div>`
             : ""
@@ -439,7 +467,7 @@ function renderGame(g: ClientGameState): string {
                     renderCard(c, {
                       selected: c.id === state.selectedCardId,
                       legal: cardIsLegalGuess(c, g),
-                      entrenchment: c.topic ? g.minutes[c.topic]?.entrenchment : undefined,
+                      resolve: c.topic ? g.minutes[c.topic]?.resolve : undefined,
                       illegalReason: illegalReason(c, g),
                     })
                   )
@@ -469,19 +497,6 @@ function renderGame(g: ClientGameState): string {
       </section>
     </div>
   `;
-}
-
-function hiddenAgendaLabel(agenda: ClientGameState["you"]["hiddenAgenda"]): string {
-  switch (agenda.type) {
-    case "CreditOnApproved":
-      return "Get Credit on any Approved item.";
-    case "CreditOnTwoPlusItems":
-      return "Get Credit on 2+ items, any status.";
-    case "TopicNeverApproved":
-      return `Keep ${agenda.targetTopic} from ever reaching Approved.`;
-    case "ItemRemovedByOther":
-      return "See an item you don't hold Credit on get Removed.";
-  }
 }
 
 function renderRevealOverlay(reveal: RoundReveal): string {
@@ -532,7 +547,7 @@ function renderEnd(g: ClientGameState): string {
         ${summary.players
           .map(
             (p) => `<li class="${p.hiddenAgendaSuccess ? "success" : "fail"}">
-              <strong>${esc(p.name)}</strong>: ${hiddenAgendaLabel(p.hiddenAgenda as any)} &mdash; ${p.hiddenAgendaSuccess ? "Achieved" : "Did not achieve"}
+              <strong>${esc(p.name)}</strong>: ${hiddenAgendaLabel(p.hiddenAgenda)} &mdash; ${p.hiddenAgendaSuccess ? "Achieved" : "Did not achieve"}
             </li>`
           )
           .join("")}

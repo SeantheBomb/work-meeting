@@ -3,6 +3,7 @@ import * as path from "node:path";
 import { CardDef, GameConfig } from "../../../shared/types";
 import { DEFAULT_CONFIG, DEFAULT_DECK } from "../../../shared/cards";
 import { evaluateHappyPath } from "./happyPath";
+import { computeRiskRewardTable, riskRewardCorrelation } from "./riskReward";
 import { MatchStats, simulateOneMatch } from "./simulate";
 
 interface ScenarioConfig {
@@ -127,6 +128,21 @@ function runScenario(scenario: ScenarioConfig, verbose = true) {
       );
     });
 
+  const riskRewardRows = computeRiskRewardTable(scenario.deck, allResults).filter((r) => r.timesChosen > 0);
+  const correlation = riskRewardCorrelation(riskRewardRows);
+  const dominated = riskRewardRows.filter((r) => r.dominatedBy);
+
+  lines.push(`\n  Risk/reward spectrum (risk = P(no effect | chosen), reward = designed value weight):`);
+  lines.push(`    Risk-reward correlation: ${correlation.toFixed(2)} (design goal: positive -- riskier cards should pay out more)`);
+  lines.push(`    Dominated cards (same-or-lower risk, strictly worse reward available elsewhere): ${dominated.length}`);
+  riskRewardRows
+    .sort((a, b) => a.risk - b.risk)
+    .forEach((row) => {
+      lines.push(
+        `    ${row.name.padEnd(24)} risk ${row.risk.toFixed(2)}  reward ${row.reward.toFixed(1)}${row.dominatedBy ? `  <-- dominated by ${row.dominatedBy}` : ""}`
+      );
+    });
+
   const report = lines.join("\n");
   console.log(report);
   return { report, label: scenario.label, happyRateByPlayerCount };
@@ -177,7 +193,7 @@ function main() {
       gamesPerPlayerCount: GAMES_PER_CONFIG,
     },
     {
-      label: "FINAL (New Business atk 2 decay 1, Overtime atk 3 decay 1)",
+      label: "FINAL (New Business atk 2 decay 1, Overtime atk 3 decay 1, Pressure threshold 3)",
       deck: DEFAULT_DECK,
       config: DEFAULT_CONFIG,
       playerCounts: PLAYER_COUNTS,

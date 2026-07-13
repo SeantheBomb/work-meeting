@@ -16,6 +16,12 @@ export interface LobbyPlayerView {
   isBot: boolean;
 }
 
+export interface KnownAgendaView {
+  playerId: string;
+  playerName: string;
+  agenda: HiddenAgenda;
+}
+
 export interface YouView {
   id: string;
   name: string;
@@ -24,6 +30,8 @@ export interface YouView {
   decayPenalty: number;
   drawPileCount: number;
   discardPileCount: number;
+  /** Opponents' Hidden Agendas learned via the Peek side effect this match. */
+  knownAgendas: KnownAgendaView[];
 }
 
 export interface PlayerPublicView {

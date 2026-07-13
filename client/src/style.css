@@ -244,8 +244,26 @@ button:hover:not(:disabled) {
 }
 
 .minutes-credit,
-.minutes-entrenchment {
+.minutes-resolve,
+.minutes-pressure {
   color: var(--muted);
+}
+
+.minutes-status-blurb {
+  font-size: 0.68rem;
+  color: var(--muted);
+  font-style: italic;
+  margin-bottom: 4px;
+}
+
+.known-agendas {
+  font-size: 0.78rem;
+  color: var(--muted);
+  margin-bottom: 10px;
+}
+
+.known-agendas strong {
+  color: var(--accent);
 }
 
 /* Players panel */

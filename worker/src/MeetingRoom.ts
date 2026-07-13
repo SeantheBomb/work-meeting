@@ -159,6 +159,7 @@ export class MeetingRoom extends DurableObject<Env> {
         handSize: map.get("handSize") ?? DEFAULT_CONFIG.handSize,
         roundSafetyCap: map.get("roundSafetyCap") ?? DEFAULT_CONFIG.roundSafetyCap,
         draftDeckSize: map.get("draftDeckSize") ?? DEFAULT_CONFIG.draftDeckSize,
+        pressureThreshold: map.get("pressureThreshold") ?? DEFAULT_CONFIG.pressureThreshold,
       };
     } catch {
       return DEFAULT_CONFIG;

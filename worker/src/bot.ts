@@ -1,5 +1,22 @@
-import { CardDef, HiddenAgenda, Topic, TOPICS } from "../../shared/types";
+import { CardDef, HiddenAgenda, SideEffectId, Topic, TOPICS } from "../../shared/types";
 import { GameState, isLegal, PlayerState } from "./engine";
+
+function sideEffectBonus(id: SideEffectId | null): number {
+  switch (id) {
+    case "BonusDraw":
+      return 1.5;
+    case "Rebate":
+      return 1;
+    case "Undermine":
+      return 1;
+    case "Deflect":
+      return 1;
+    case "Peek":
+      return 0.5;
+    default:
+      return 0;
+  }
+}
 
 /**
  * Simple heuristic bot: scores each legal card in hand by how much it advances
@@ -9,6 +26,8 @@ import { GameState, isLegal, PlayerState } from "./engine";
  */
 function scoreCard(card: CardDef, state: GameState, player: PlayerState): number {
   let score = card.attack;
+  const agenda = player.hiddenAgenda;
+  const isOwnAgendaTopic = card.topic === agenda.topic;
 
   if (card.verb === "Add") {
     score += 4;
@@ -16,37 +35,29 @@ function scoreCard(card: CardDef, state: GameState, player: PlayerState): number
     score += 3;
   } else if (card.verb === "Rewrite") {
     const item = state.minutes[card.topic!]!;
-    const willSucceed = card.sustain >= item.entrenchment;
+    const willSucceed = card.sustain >= item.resolve;
     if (willSucceed) {
       score += 5;
       if (card.resultStatus === "Approved") {
         score += 8;
-        if (player.hiddenAgenda.type === "TopicNeverApproved" && player.hiddenAgenda.targetTopic === card.topic) {
-          score -= 20;
-        }
-        if (player.hiddenAgenda.type === "CreditOnApproved") score += 6;
+        if (isOwnAgendaTopic) score += agenda.stance === "Approve" ? 10 : -20;
+      } else if (isOwnAgendaTopic && agenda.stance === "Block") {
+        score += 2; // keep it busy in Disputed/Tabled rather than let it drift toward Approved
       }
-      if (player.hiddenAgenda.type === "CreditOnTwoPlusItems" && item.credit !== player.id) score += 4;
     } else {
       score -= 3;
     }
   } else if (card.verb === "Remove") {
     const item = state.minutes[card.topic!]!;
-    const willSucceed = card.sustain >= item.entrenchment;
+    const willSucceed = card.sustain >= item.resolve;
     if (willSucceed) {
       score += 3;
-      if (item.status === "Approved") score -= 6;
-      if (item.credit !== player.id) {
-        score += 2;
-        if (player.hiddenAgenda.type === "ItemRemovedByOther") score += 3;
+      if (item.status === "Approved") {
+        score -= 6;
+        if (isOwnAgendaTopic && agenda.stance === "Block") score += 15; // rescue: undo the approval before it's final
       }
-      if (
-        player.hiddenAgenda.type === "TopicNeverApproved" &&
-        item.topic === player.hiddenAgenda.targetTopic &&
-        item.status !== "Approved"
-      ) {
-        score += 5;
-      }
+      if (isOwnAgendaTopic && agenda.stance === "Approve") score -= 10; // don't destroy your own progress
+      if (item.credit !== player.id) score += 2;
     } else {
       score -= 2;
     }
@@ -54,13 +65,14 @@ function scoreCard(card: CardDef, state: GameState, player: PlayerState): number
     score -= 4;
   }
 
+  score += sideEffectBonus(card.sideEffect);
   score += (Math.random() - 0.5) * 2;
   return score;
 }
 
 function pickTopicForNewBusiness(state: GameState, player: PlayerState): Topic {
   const open = TOPICS.filter((t) => !state.minutes[t]);
-  const forbidden = player.hiddenAgenda.type === "TopicNeverApproved" ? player.hiddenAgenda.targetTopic : undefined;
+  const forbidden = player.hiddenAgenda.stance === "Block" ? player.hiddenAgenda.topic : undefined;
   const preferred = open.filter((t) => t !== forbidden);
   const pool = preferred.length > 0 ? preferred : open;
   return pool[Math.floor(Math.random() * pool.length)];
@@ -100,14 +112,12 @@ function scoreDraftPick(card: CardDef, alreadyDrafted: CardDef[], hiddenAgenda: 
 
   if (card.verb === "NewBusiness" || card.verb === "Overtime") score += 2;
 
-  if (card.resultStatus === "Approved") {
-    if (hiddenAgenda.type === "CreditOnApproved" || hiddenAgenda.type === "CreditOnTwoPlusItems") score += 4;
-    if (hiddenAgenda.type === "TopicNeverApproved" && card.topic === hiddenAgenda.targetTopic) score -= 6;
+  if (card.topic === hiddenAgenda.topic) {
+    if (card.resultStatus === "Approved") score += hiddenAgenda.stance === "Approve" ? 6 : -4;
+    if (card.verb === "Remove") score += hiddenAgenda.stance === "Block" ? 5 : -2;
   }
-  if (card.verb === "Remove") {
-    if (hiddenAgenda.type === "TopicNeverApproved" && card.topic === hiddenAgenda.targetTopic) score += 4;
-    if (hiddenAgenda.type === "ItemRemovedByOther") score += 1;
-  }
+
+  score += sideEffectBonus(card.sideEffect);
 
   if (card.topic) {
     const sameTopicCount = alreadyDrafted.filter((c) => c.topic === card.topic).length;

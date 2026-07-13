@@ -6,8 +6,8 @@ export async function logMatchStart(db: D1Database, roomCode: string, state: Gam
     id: p.id,
     name: p.name,
     isBot: p.isBot,
-    hiddenAgendaType: p.hiddenAgenda.type,
-    hiddenAgendaTarget: p.hiddenAgenda.targetTopic ?? null,
+    hiddenAgendaStance: p.hiddenAgenda.stance,
+    hiddenAgendaTopic: p.hiddenAgenda.topic,
   }));
   try {
     await db
@@ -81,8 +81,8 @@ export async function logMatchEnd(db: D1Database, state: GameState) {
   const players = summary.players.map((p) => ({
     id: p.id,
     name: p.name,
-    hiddenAgendaType: p.hiddenAgenda.type,
-    hiddenAgendaTarget: p.hiddenAgenda.targetTopic ?? null,
+    hiddenAgendaStance: p.hiddenAgenda.stance,
+    hiddenAgendaTopic: p.hiddenAgenda.topic,
     hiddenAgendaSuccess: p.hiddenAgendaSuccess,
     creditedApproved: p.creditedApproved,
     creditedTotal: p.creditedTotal,

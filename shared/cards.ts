@@ -1,4 +1,5 @@
-import { CardDef, CardTemplateId, Status, Topic, TOPICS, Verb } from "./types";
+import { CardDef, CardTemplateId, SIDE_EFFECTS, SideEffectId, Status, Topic, TOPICS, Verb } from "./types";
+import { SIDE_EFFECT_TEXT } from "./sideEffects";
 
 interface Template {
   id: CardTemplateId;
@@ -33,7 +34,7 @@ const TEMPLATES: Template[] = [
     sustain: 2,
     decay: 1,
     flavor: (t) => `"I have some concerns about ${t}." (There is one concern. It is personal.)`,
-    effect: (t) => `Rewrites ${t} to Disputed. Needs Sustain 2+ vs. its current Entrenchment, or it bounces.`,
+    effect: (t) => `Rewrites ${t} to Disputed. Needs Sustain 2+ vs. its current Resolve, or it bounces.`,
   },
   {
     id: "TableIt",
@@ -44,7 +45,7 @@ const TEMPLATES: Template[] = [
     sustain: 3,
     decay: 1,
     flavor: (t) => `The ${t} conversation goes into the parking lot, where all good ideas quietly expire.`,
-    effect: (t) => `Rewrites ${t} to Tabled. Needs Sustain 3+ vs. its current Entrenchment, or it bounces.`,
+    effect: (t) => `Rewrites ${t} to Tabled. Needs Sustain 3+ vs. its current Resolve, or it bounces.`,
   },
   {
     id: "SignOff",
@@ -55,7 +56,7 @@ const TEMPLATES: Template[] = [
     sustain: 4,
     decay: 2,
     flavor: (t) => `You did email this about ${t}. Three times. It didn't help then either.`,
-    effect: (t) => `Rewrites ${t} to Approved. Needs Sustain 4+ vs. its current Entrenchment, or it bounces.`,
+    effect: (t) => `Rewrites ${t} to Approved. Needs Sustain 4+ vs. its current Resolve, or it bounces.`,
   },
   {
     id: "ShootDown",
@@ -66,18 +67,26 @@ const TEMPLATES: Template[] = [
     sustain: 3,
     decay: 1,
     flavor: () => `A phrase that has never once resulted in anything happening offline.`,
-    effect: (t) => `Strikes ${t} from the Minutes entirely. Needs Sustain 3+ vs. its current Entrenchment, or it bounces.`,
+    effect: (t) => `Strikes ${t} from the Minutes entirely. Needs Sustain 3+ vs. its current Resolve, or it bounces.`,
   },
 ];
 
+/** 5x5 Latin square over (template, topic): every template sees every side effect exactly
+ * once across its 5 topic variants, and every topic sees every side effect exactly once
+ * across its 5 templates. See DESIGN_NOTES.md section 2. */
+function sideEffectFor(templateIndex: number, topicIndex: number): SideEffectId {
+  return SIDE_EFFECTS[(templateIndex + topicIndex) % SIDE_EFFECTS.length];
+}
+
 function buildTopicCards(): CardDef[] {
   const cards: CardDef[] = [];
-  for (const topic of TOPICS) {
-    for (const t of TEMPLATES) {
+  TOPICS.forEach((topic, topicIndex) => {
+    TEMPLATES.forEach((t, templateIndex) => {
+      const sideEffect = sideEffectFor(templateIndex, topicIndex);
       cards.push({
         id: `${topic}-${t.id}`,
         name: t.name,
-        effectText: t.effect(topic),
+        effectText: `${t.effect(topic)} ${SIDE_EFFECT_TEXT[sideEffect]}`,
         flavorText: t.flavor(topic),
         topic,
         verb: t.verb,
@@ -85,9 +94,10 @@ function buildTopicCards(): CardDef[] {
         attack: t.attack,
         sustain: t.sustain,
         decay: t.decay,
+        sideEffect,
       });
-    }
-  }
+    });
+  });
   return cards;
 }
 
@@ -103,6 +113,7 @@ const UNIVERSAL_CARDS: CardDef[] = [
     attack: 2,
     sustain: 1,
     decay: 1,
+    sideEffect: null,
   },
   {
     id: "NewBusinessB",
@@ -115,6 +126,7 @@ const UNIVERSAL_CARDS: CardDef[] = [
     attack: 2,
     sustain: 1,
     decay: 1,
+    sideEffect: null,
   },
   {
     id: "NewBusinessC",
@@ -127,6 +139,7 @@ const UNIVERSAL_CARDS: CardDef[] = [
     attack: 2,
     sustain: 1,
     decay: 1,
+    sideEffect: null,
   },
   {
     id: "NewBusinessD",
@@ -139,6 +152,7 @@ const UNIVERSAL_CARDS: CardDef[] = [
     attack: 2,
     sustain: 1,
     decay: 1,
+    sideEffect: null,
   },
   {
     id: "Overtime",
@@ -151,10 +165,11 @@ const UNIVERSAL_CARDS: CardDef[] = [
     attack: 3,
     sustain: 0,
     decay: 1,
+    sideEffect: null,
   },
 ];
 
-/** The full 28-card shared deck (default values — D1 `card_definitions` can override attack/sustain/decay). */
+/** The full 30-card shared deck (default values — D1 `card_definitions` can override attack/sustain/decay). */
 export const DEFAULT_DECK: CardDef[] = [...buildTopicCards(), ...UNIVERSAL_CARDS];
 
 export const DEFAULT_CONFIG = {
@@ -162,6 +177,7 @@ export const DEFAULT_CONFIG = {
   handSize: 5,
   roundSafetyCap: 40,
   draftDeckSize: 10,
+  pressureThreshold: 3,
 };
 
 export function applyOverrides(

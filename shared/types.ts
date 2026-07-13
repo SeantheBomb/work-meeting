@@ -8,12 +8,15 @@ export type Verb = "Add" | "Rewrite" | "Remove" | "NewBusiness" | "Overtime";
 
 export type CardTemplateId = "QuickNote" | "PushBack" | "TableIt" | "SignOff" | "ShootDown";
 
+export const SIDE_EFFECTS = ["BonusDraw", "Peek", "Undermine", "Rebate", "Deflect"] as const;
+export type SideEffectId = (typeof SIDE_EFFECTS)[number];
+
 /** A concrete card instance in the deck (topic-specific, or a universal card). */
 export interface CardDef {
   /** Stable id, e.g. "Budget-QuickNote" or "NewBusinessA" */
   id: string;
   name: string;
-  /** Plain-English mechanical effect, e.g. "Rewrite Budget to Disputed. Needs Sustain >= the item's Entrenchment to succeed." */
+  /** Plain-English mechanical effect, e.g. "Rewrite Budget to Disputed. Needs Sustain >= the item's Resolve to succeed." */
   effectText: string;
   flavorText: string;
   topic: Topic | null;
@@ -23,6 +26,8 @@ export interface CardDef {
   attack: number;
   sustain: number;
   decay: number;
+  /** Triggers whenever this card wins priority (success or bounce). null for universal/wild cards. */
+  sideEffect: SideEffectId | null;
 }
 
 export interface LineItem {
@@ -30,8 +35,13 @@ export interface LineItem {
   status: Status;
   /** playerId currently credited */
   credit: string;
-  /** stored Sustain of whichever card most recently wrote this item */
-  entrenchment: number;
+  /** How hard this item is to overturn. Base = the Sustain of whichever card last wrote it, plus a
+   * per-Status modifier (see engine.ts statusResolveModifier) -- Disputed/Approved add a bonus,
+   * Tabled decays automatically each round it sits untouched. */
+  resolve: number;
+  /** Failed (talked-over) Rewrite/Remove attempts against this item accumulate here; at 3, Resolve
+   * drops by 1 and this resets. Means a losing round still wears down the target. */
+  pressure: number;
 }
 
 export interface Floor {
@@ -39,16 +49,14 @@ export interface Floor {
   status: Status;
 }
 
-export type HiddenAgendaType =
-  | "CreditOnApproved"
-  | "CreditOnTwoPlusItems"
-  | "TopicNeverApproved"
-  | "ItemRemovedByOther";
+export type AgendaStance = "Approve" | "Block";
 
+/** Every player gets exactly one (topic, stance) pair. Assignment guarantees no two players share
+ * the identical pair, and whenever 2+ players share a topic they're split across both stances --
+ * so agendas are never redundant and always create real opposition wherever they overlap. */
 export interface HiddenAgenda {
-  type: HiddenAgendaType;
-  /** for TopicNeverApproved: the topic that must never reach Approved */
-  targetTopic?: Topic;
+  topic: Topic;
+  stance: AgendaStance;
 }
 
 export interface GameConfig {
@@ -57,6 +65,9 @@ export interface GameConfig {
   roundSafetyCap: number;
   /** Cards each player drafts into their personal deck; auto-clamped to deck size / player count. */
   draftDeckSize: number;
+  /** Talked-over Rewrite/Remove attempts accumulate Pressure on their target; at this
+   * threshold Resolve drops by 1 and Pressure resets. See DESIGN_NOTES.md section 3. */
+  pressureThreshold: number;
 }
 
 export interface LogEntry {
@@ -78,8 +89,10 @@ export interface RevealPlay {
   effAttack: number;
   legal: boolean;
   isWinner: boolean;
-  /** only meaningful when isWinner: false means the entrenchment check bounced */
+  /** only meaningful when isWinner: false means the Resolve check bounced */
   success: boolean;
+  /** the side effect that fired, if this play won priority and the card has one */
+  sideEffect: SideEffectId | null;
 }
 
 export interface RoundReveal {
