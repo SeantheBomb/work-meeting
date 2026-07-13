@@ -1,0 +1,69 @@
+import { CardDef } from "../../shared/types";
+import { Commit, GameState, PlayerState, RemoveEvent } from "./engine";
+
+export interface PersistedGameState {
+  phase: GameState["phase"];
+  config: GameState["config"];
+  deck: CardDef[];
+  players: [string, PlayerState][];
+  seatOrder: string[];
+  drawPile: string[];
+  discardPile: string[];
+  minutes: GameState["minutes"];
+  floor: GameState["floor"];
+  duration: number;
+  round: number;
+  chairSeat: number;
+  overtimeUses: number;
+  fatigue: number;
+  commits: [string, Commit][];
+  log: GameState["log"];
+  removeEvents: RemoveEvent[];
+  endSummary: GameState["endSummary"];
+}
+
+export function toPersisted(state: GameState): PersistedGameState {
+  return {
+    phase: state.phase,
+    config: state.config,
+    deck: [...state.deckById.values()],
+    players: [...state.players.entries()],
+    seatOrder: state.seatOrder,
+    drawPile: state.drawPile,
+    discardPile: state.discardPile,
+    minutes: state.minutes,
+    floor: state.floor,
+    duration: state.duration,
+    round: state.round,
+    chairSeat: state.chairSeat,
+    overtimeUses: state.overtimeUses,
+    fatigue: state.fatigue,
+    commits: [...state.commits.entries()],
+    log: state.log,
+    removeEvents: state.removeEvents,
+    endSummary: state.endSummary,
+  };
+}
+
+export function fromPersisted(p: PersistedGameState): GameState {
+  return {
+    phase: p.phase,
+    config: p.config,
+    deckById: new Map(p.deck.map((c) => [c.id, c])),
+    players: new Map(p.players),
+    seatOrder: p.seatOrder,
+    drawPile: p.drawPile,
+    discardPile: p.discardPile,
+    minutes: p.minutes,
+    floor: p.floor,
+    duration: p.duration,
+    round: p.round,
+    chairSeat: p.chairSeat,
+    overtimeUses: p.overtimeUses,
+    fatigue: p.fatigue,
+    commits: new Map(p.commits),
+    log: p.log,
+    removeEvents: p.removeEvents,
+    endSummary: p.endSummary,
+  };
+}

@@ -1,0 +1,23 @@
+name = "work-meeting"
+main = "src/index.ts"
+compatibility_date = "2025-01-01"
+compatibility_flags = ["nodejs_compat"]
+
+[assets]
+directory = "../client/dist"
+binding = "ASSETS"
+not_found_handling = "single-page-application"
+
+[[durable_objects.bindings]]
+name = "MEETING_ROOM"
+class_name = "MeetingRoom"
+
+[[migrations]]
+tag = "v1"
+new_classes = ["MeetingRoom"]
+
+[[d1_databases]]
+binding = "DB"
+database_name = "work-meeting-db"
+database_id = "REPLACE_ME_AFTER_D1_CREATE"
+migrations_dir = "../migrations"
