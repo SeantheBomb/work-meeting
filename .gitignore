@@ -6,3 +6,4 @@ dist/
 client/dist/
 worker/.dev.vars
 .env
+sim-results/

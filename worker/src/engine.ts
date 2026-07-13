@@ -162,13 +162,16 @@ export function allCommitted(state: GameState): boolean {
   return true;
 }
 
-function cardTopicMatches(card: CardDef, floor: Floor | null): boolean {
-  if (!floor) return true;
-  if (card.topic && card.topic === floor.topic) return true;
-  if (card.resultStatus && card.resultStatus === floor.status) return true;
-  return false;
-}
-
+/**
+ * Legality no longer gates Rewrite/Remove on matching "the Floor" (a single global
+ * topic+status slot). An early simulation pass (see /sim-results) showed that rule
+ * left 44-58% of all turns with zero legal cards and collapsed 2P/4P games via mass
+ * "awkward silence" passes in ~3 rounds. Rewrite/Remove are now legal any time their
+ * own topic has an existing Line Item; the real tension moved to the entrenchment
+ * success/bounce check, which was always the interesting risk anyway. The Floor is
+ * kept as pure display state (what was most recently touched) for narrative/UI, not
+ * as a legality gate.
+ */
 export function isLegal(card: CardDef, state: GameState): boolean {
   if (card.sustain > state.duration && card.verb !== "Overtime") return false;
   if (card.verb === "NewBusiness") {
@@ -178,22 +181,10 @@ export function isLegal(card: CardDef, state: GameState): boolean {
     return true;
   }
   if (card.verb === "Add") {
-    const topic = card.topic!;
-    if (state.minutes[topic]) return false; // must be untouched
-    if (!state.floor) return true;
-    if (state.floor.status === "Raised") return true;
-    return false;
+    return !state.minutes[card.topic!]; // legal any time its own topic is untouched
   }
-  if (card.verb === "Rewrite") {
-    const topic = card.topic!;
-    const item = state.minutes[topic];
-    if (!item) return false;
-    return cardTopicMatches(card, state.floor);
-  }
-  if (card.verb === "Remove") {
-    if (!state.floor) return false;
-    if (card.topic !== state.floor.topic) return false;
-    return true;
+  if (card.verb === "Rewrite" || card.verb === "Remove") {
+    return !!state.minutes[card.topic!]; // legal any time its own topic has an existing item
   }
   return false;
 }
@@ -218,13 +209,6 @@ function drawUpTo(state: GameState, playerId: string) {
     if (!drawn) return;
     player.hand.push(drawn);
   }
-}
-
-function findNewLiveFloor(state: GameState): Floor | null {
-  const items = Object.values(state.minutes) as LineItem[];
-  if (items.length === 0) return null;
-  const last = items[items.length - 1];
-  return { topic: last.topic, status: last.status };
 }
 
 export function resolveRound(state: GameState): RoundReveal {
@@ -323,12 +307,12 @@ export function resolveRound(state: GameState): RoundReveal {
       effectText = `${winnerPlayer.name}'s attempt to rewrite ${topic} bounced. It's a little easier to crack now.`;
     }
   } else if (card.verb === "Remove") {
-    const topic = state.floor!.topic;
+    const topic = card.topic!;
     const item = state.minutes[topic]!;
     if (card.sustain >= item.entrenchment) {
       state.removeEvents.push({ topic, removedCredit: item.credit, removedBy: winner.playerId, round: state.round });
       delete state.minutes[topic];
-      state.floor = findNewLiveFloor(state);
+      if (state.floor?.topic === topic) state.floor = null;
       effectText = `${winnerPlayer.name} struck ${topic} from the record.`;
     } else {
       success = false;

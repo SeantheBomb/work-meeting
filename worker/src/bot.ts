@@ -31,7 +31,7 @@ function scoreCard(card: CardDef, state: GameState, player: PlayerState): number
       score -= 3;
     }
   } else if (card.verb === "Remove") {
-    const item = state.minutes[state.floor!.topic]!;
+    const item = state.minutes[card.topic!]!;
     const willSucceed = card.sustain >= item.entrenchment;
     if (willSucceed) {
       score += 3;

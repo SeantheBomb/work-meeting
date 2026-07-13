@@ -13,6 +13,8 @@ export interface CardDef {
   /** Stable id, e.g. "Budget-QuickNote" or "NewBusinessA" */
   id: string;
   name: string;
+  /** Plain-English mechanical effect, e.g. "Rewrite Budget to Disputed. Needs Sustain >= the item's Entrenchment to succeed." */
+  effectText: string;
   flavorText: string;
   topic: Topic | null;
   verb: Verb;

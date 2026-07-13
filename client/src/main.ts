@@ -22,6 +22,8 @@ interface AppState {
   selectedCardId: string | null;
   selectedTopic: Topic | null;
   error: string | null;
+  showHelp: boolean;
+  showHandHint: boolean;
 }
 
 const state: AppState = {
@@ -37,6 +39,8 @@ const state: AppState = {
   selectedCardId: null,
   selectedTopic: null,
   error: null,
+  showHelp: !localStorage.getItem("wm_seen_tutorial"),
+  showHandHint: !localStorage.getItem("wm_seen_hand_hint"),
 };
 
 const app = document.getElementById("app")!;
@@ -128,13 +132,55 @@ function render() {
   if (state.reveal && state.revealVisible) {
     app.insertAdjacentHTML("beforeend", renderRevealOverlay(state.reveal));
   }
+  if (state.showHelp) {
+    app.insertAdjacentHTML("beforeend", renderHelpModal());
+  }
   attachHandlers();
+}
+
+function renderHelpModal(): string {
+  return `
+    <div class="help-overlay">
+      <div class="help-box">
+        <div class="help-header">
+          <h2>How Work Meeting Works</h2>
+          <button class="secondary" data-action="close-help">Got it</button>
+        </div>
+        <div class="help-body">
+          <p>Everyone's in the same meeting, sharing the same agenda. Everyone also has a private <strong>Hidden Agenda</strong> they'll never say out loud (yours is shown in the hand panel once the meeting starts).</p>
+
+          <h3>The Minutes</h3>
+          <p>There are 5 Topics: Budget, Timeline, Personnel, Strategy, Operations. Each one moves through stages as people play cards on it: <strong>Raised &rarr; Disputed &rarr; Tabled &rarr; Approved</strong>. The table wins together if <strong>any 2 Topics reach Approved</strong> &mdash; that's the Shared Agenda.</p>
+
+          <h3>Each round</h3>
+          <p>Everyone secretly picks one card (or Passes). Then everyone reveals at once. The card with the highest effective <strong>Attack</strong> wins the floor and actually happens &mdash; everyone else got talked over, no effect, no cost. Ties go to whoever is closest to the rotating Chair (&#128081;).</p>
+
+          <h3>Reading a card</h3>
+          <ul class="help-list">
+            <li>&#9889; <strong>Attack</strong> &mdash; how fast you jump in. Highest Attack wins the round.</li>
+            <li>&#9203; <strong>Sustain</strong> &mdash; if you win: spends that much of the shared Duration clock, and is the strength you're bringing. To Rewrite or Remove something, your Sustain must be &ge; its current <strong>Entrenchment</strong> or the attempt bounces (no change, but the target gets 1 easier to crack next time).</li>
+            <li>&#128564; <strong>Decay</strong> &mdash; winning with this card tires you out: it's subtracted from your Attack the next time you try to win with anything.</li>
+          </ul>
+
+          <h3>Legal vs illegal</h3>
+          <p>A card in your hand is only playable if its Topic is untouched (to raise it) or already has an item on it (to Rewrite/Remove it). Illegal cards look faded &mdash; you can still see them, just can't play them this round.</p>
+
+          <h3>Duration</h3>
+          <p>A shared clock for the whole table. Winning plays spend it. If it runs out and nobody has a legal move left, the meeting's over &mdash; check the Shared Agenda and everyone's Hidden Agenda to see how it went.</p>
+        </div>
+        <button data-action="close-help">Got it, let's go</button>
+      </div>
+    </div>
+  `;
 }
 
 function renderLanding(): string {
   return `
     <div class="screen landing">
-      <h1>Work Meeting</h1>
+      <div class="title-row">
+        <h1>Work Meeting</h1>
+        <button class="secondary help-btn" data-action="open-help">How to Play</button>
+      </div>
       <p class="tagline">Everyone's in the same meeting. Everyone has a private reason for being there.</p>
       ${state.error ? `<div class="error">${esc(state.error)}</div>` : ""}
       <form id="create-form" class="panel">
@@ -163,7 +209,10 @@ function renderLobby(): string {
   const isHost = l.youId === l.hostId;
   return `
     <div class="screen lobby">
-      <h1>Meeting Lobby</h1>
+      <div class="title-row">
+        <h1>Meeting Lobby</h1>
+        <button class="secondary help-btn" data-action="open-help">How to Play</button>
+      </div>
       <div class="room-code">Room code: <span>${esc(l.roomCode)}</span> <button data-action="copy-code">Copy</button></div>
       ${state.error ? `<div class="error">${esc(state.error)}</div>` : ""}
       <ul class="player-list">
@@ -176,7 +225,7 @@ function renderLobby(): string {
           )
           .join("")}
       </ul>
-      <p class="hint">2-8 people (bots welcome). Anyone can start once at least 2 have joined.</p>
+      <p class="hint">2-8 people (bots welcome). Once you start, everyone secretly picks one card per round &mdash; see "How to Play" if you're new.</p>
       <div class="lobby-actions">
         <button data-action="start" ${canStart ? "" : "disabled"}>Start Meeting</button>
         <button data-action="add-bot" class="secondary" ${canAddBot ? "" : "disabled"}>Add Bot</button>
@@ -201,39 +250,35 @@ function cardIsLegalGuess(card: CardDef, g: ClientGameState): boolean {
   if (card.verb !== "Overtime" && card.sustain > g.duration) return false;
   if (card.verb === "NewBusiness") return TOPIC_ORDER.some((t) => !g.minutes[t]);
   if (card.verb === "Overtime") return true;
-  if (card.verb === "Add") {
-    if (g.minutes[card.topic!]) return false;
-    if (!g.floor) return true;
-    return g.floor.status === "Raised";
-  }
-  if (card.verb === "Rewrite") {
-    const item = g.minutes[card.topic!];
-    if (!item) return false;
-    if (!g.floor) return true;
-    return card.topic === g.floor.topic || card.resultStatus === g.floor.status;
-  }
-  if (card.verb === "Remove") {
-    if (!g.floor) return false;
-    return card.topic === g.floor.topic;
-  }
+  if (card.verb === "Add") return !g.minutes[card.topic!];
+  if (card.verb === "Rewrite" || card.verb === "Remove") return !!g.minutes[card.topic!];
   return false;
 }
 
-function renderCard(card: CardDef, opts: { selected?: boolean; legal?: boolean; faded?: boolean; badge?: string } = {}): string {
+function renderCard(
+  card: CardDef,
+  opts: { selected?: boolean; legal?: boolean; faded?: boolean; badge?: string; entrenchment?: number } = {}
+): string {
   const cls = ["card"];
   if (opts.selected) cls.push("selected");
   if (opts.legal === false) cls.push("illegal");
   if (opts.faded) cls.push("faded");
+  const needsEntrenchment = card.verb === "Rewrite" || card.verb === "Remove";
   return `
     <div class="${cls.join(" ")}" data-card-id="${card.id}" style="--topic-color:${topicColor(card.topic)}">
       ${opts.badge ? `<div class="card-badge">${opts.badge}</div>` : ""}
       <div class="card-topic">${card.topic ?? "Universal"}</div>
       <div class="card-name">${esc(card.name)}</div>
       <div class="card-stats">
-        <span title="Attack">&#9889;${card.attack}</span>
-        <span title="Sustain">&#9203;${card.sustain}</span>
-        <span title="Decay">&#128564;${card.decay}</span>
+        <span title="Attack: speed to win priority">&#9889; Atk ${card.attack}</span>
+        <span title="Sustain: costs this much Duration; also the entrenchment it sets or must beat">&#9203; Sus ${card.sustain}</span>
+        <span title="Decay: your own Attack penalty next time you win with this">&#128564; Dec ${card.decay}</span>
       </div>
+      <div class="card-effect">${esc(card.effectText)}${
+        needsEntrenchment && opts.entrenchment !== undefined
+          ? ` <strong>Target's Entrenchment: ${opts.entrenchment}</strong> (${card.sustain >= opts.entrenchment ? "would succeed" : "would bounce"})`
+          : ""
+      }</div>
       <div class="card-flavor">${esc(card.flavorText)}</div>
     </div>
   `;
@@ -277,6 +322,7 @@ function renderGame(g: ClientGameState): string {
         <div class="meta">Room ${esc(g.config ? state.roomCode : state.roomCode)} &middot; Round ${g.round}</div>
         <div class="duration">Duration: <strong>${g.duration}</strong></div>
         <div class="fatigue">Fatigue: ${g.fatigue}</div>
+        <button class="secondary help-btn" data-action="open-help">?</button>
       </header>
 
       ${renderMinutesBoard(g)}
@@ -295,12 +341,25 @@ function renderGame(g: ClientGameState): string {
       </section>
 
       <section class="hand-panel">
-        <div class="hidden-agenda">Hidden Agenda: <strong>${hiddenAgendaLabel(you.hiddenAgenda)}</strong></div>
+        <div class="hidden-agenda">Hidden Agenda: <strong>${hiddenAgendaLabel(you.hiddenAgenda)}</strong> <span class="hint">(private &mdash; don't say it out loud)</span></div>
+        ${
+          state.showHandHint && g.round <= 2 && !youCommitted
+            ? `<div class="hand-hint">Full-color cards are legal to play this round; faded ones would get talked over. Pick one and hit Commit, or Pass if nothing fits. <button class="secondary" data-action="dismiss-hand-hint">Got it</button></div>`
+            : ""
+        }
         ${
           youCommitted
             ? `<p class="hint">Locked in. Waiting for the rest of the room...</p>`
             : `<div class="hand">
-                ${you.hand.map((c) => renderCard(c, { selected: c.id === state.selectedCardId, legal: cardIsLegalGuess(c, g) })).join("")}
+                ${you.hand
+                  .map((c) =>
+                    renderCard(c, {
+                      selected: c.id === state.selectedCardId,
+                      legal: cardIsLegalGuess(c, g),
+                      entrenchment: c.topic ? g.minutes[c.topic]?.entrenchment : undefined,
+                    })
+                  )
+                  .join("")}
                </div>
                ${
                  needsTopicPick
@@ -441,6 +500,17 @@ function attachHandlers() {
         state.conn?.send({ type: "remove-bot", playerId });
       } else if (action === "pick-topic") {
         state.selectedTopic = el.dataset.topic as Topic;
+        render();
+      } else if (action === "open-help") {
+        state.showHelp = true;
+        render();
+      } else if (action === "close-help") {
+        state.showHelp = false;
+        localStorage.setItem("wm_seen_tutorial", "1");
+        render();
+      } else if (action === "dismiss-hand-hint") {
+        state.showHandHint = false;
+        localStorage.setItem("wm_seen_hand_hint", "1");
         render();
       }
     });

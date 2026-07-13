@@ -11,9 +11,11 @@
     "dev:client": "npm run dev --workspace client",
     "dev:worker": "npm run dev --workspace worker",
     "deploy": "npm run build:client && npm run deploy --workspace worker",
-    "typecheck": "npm run typecheck --workspace client && npm run typecheck --workspace worker"
+    "typecheck": "npm run typecheck --workspace client && npm run typecheck --workspace worker",
+    "simulate": "tsx worker/src/sim/run.ts"
   },
   "devDependencies": {
+    "tsx": "^4.19.2",
     "typescript": "^5.6.3"
   }
 }
