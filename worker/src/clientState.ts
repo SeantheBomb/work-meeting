@@ -1,5 +1,25 @@
-import { ClientGameState, DraftView } from "../../shared/protocol";
+import { ClientGameState, DraftView, PendingVoteView } from "../../shared/protocol";
 import { draftTurnPlayerId, GameState } from "./engine";
+
+function buildPendingVoteView(game: GameState, viewerId: string): PendingVoteView | undefined {
+  const vote = game.pendingVote;
+  if (!vote) return undefined;
+  return {
+    candidates: vote.candidates.map((c) => {
+      const player = game.players.get(c.playerId)!;
+      const card = game.deckById.get(c.cardId)!;
+      return { playerId: c.playerId, playerName: player.name, card };
+    }),
+    voterIds: vote.voterIds,
+    votes: vote.votes.map((v) => ({
+      voterId: v.voterId,
+      voterName: game.players.get(v.voterId)!.name,
+      candidatePlayerId: v.candidatePlayerId,
+    })),
+    youAreVoter: vote.voterIds.includes(viewerId),
+    youHaveVoted: vote.votes.some((v) => v.voterId === viewerId),
+  };
+}
 
 function buildDraftView(game: GameState, viewerId: string): DraftView {
   const me = game.players.get(viewerId)!;
@@ -30,8 +50,9 @@ export function buildClientState(game: GameState, viewerId: string): ClientGameS
       connected: p.connected,
       isBot: p.isBot,
       handCount: p.hand.length,
-      decayPenalty: p.decayPenalty,
+      stamina: p.stamina,
       seat: p.seat,
+      avatar: p.avatar ?? "🧑‍💼", // in-flight matches persisted before avatars existed
     };
   });
 
@@ -41,28 +62,24 @@ export function buildClientState(game: GameState, viewerId: string): ClientGameS
       id: me.id,
       name: me.name,
       hand: me.hand.map((cid) => game.deckById.get(cid)!),
-      hiddenAgenda: me.hiddenAgenda,
-      decayPenalty: me.decayPenalty,
+      agendaCard: me.agendaCard,
+      stamina: me.stamina,
       drawPileCount: me.drawPile.length,
       discardPileCount: me.discardPile.length,
-      knownAgendas: game.peeks
-        .filter((p) => p.viewerId === viewerId)
-        .map((p) => {
-          const about = game.players.get(p.aboutPlayerId)!;
-          return { playerId: about.id, playerName: about.name, agenda: about.hiddenAgenda };
-        }),
+      avatar: me.avatar ?? "🧑‍💼",
     },
     players,
     draft: game.phase === "draft" ? buildDraftView(game, viewerId) : undefined,
-    minutes: game.minutes,
-    floor: game.floor,
+    pendingVote: buildPendingVoteView(game, viewerId),
+    topics: game.topics,
+    hasUndoTarget: game.lastPlaySnapshot !== null,
     duration: game.duration,
     round: game.round,
     chairSeat: game.chairSeat,
     fatigue: game.fatigue,
-    overtimeUses: game.overtimeUses,
     log: game.log.slice(-40),
     committedPlayerIds: [...game.commits.keys()],
+    youSwappedThisRound: game.swappedThisRound.includes(viewerId),
     config: game.config,
     endSummary: game.endSummary,
   };

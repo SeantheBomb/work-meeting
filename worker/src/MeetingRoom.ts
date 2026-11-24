@@ -1,13 +1,16 @@
 import { DurableObject } from "cloudflare:workers";
-import { applyOverrides, DEFAULT_CONFIG, DEFAULT_DECK } from "../../shared/cards";
+import { applyOverrides, applyTransferAmount, DEFAULT_CONFIG, DEFAULT_DECK } from "../../shared/cards";
 import { ClientMessage, ServerMessage } from "../../shared/protocol";
-import { RoundReveal, Topic } from "../../shared/types";
-import { chooseBotCommit, chooseBotDraftPick } from "./bot";
+import { MAX_PLAYERS, RoundReveal } from "../../shared/types";
+import { validateAndRenderChat } from "../../shared/chat";
+import { chooseBotCommit, chooseBotDraftPick, chooseBotReactions, chooseBotVote } from "./bot";
 import { buildClientState } from "./clientState";
 import {
   allCommitted,
   beginDraft,
+  castVote,
   commitCard,
+  discardSwap,
   draftPick,
   draftTurnPlayerId,
   finalizeDraft,
@@ -29,8 +32,6 @@ interface LobbyPlayer {
 interface Attachment {
   playerId: string;
 }
-
-const MAX_PLAYERS = 8;
 
 const BOT_NAMES = [
   "Kevin from IT (Bot)",
@@ -76,6 +77,30 @@ export class MeetingRoom extends DurableObject<Env> {
   private async saveLobby() {
     await this.ctx.storage.put("lobby", this.lobby ?? []);
     if (this.hostId) await this.ctx.storage.put("hostId", this.hostId);
+  }
+
+  /** Upserts this room's live presence into D1 for the landing page's "X meetings /
+   * Y attendees right now" tracker. Counts connected humans only -- a room full of
+   * idle bots isn't activity worth advertising. Rows go stale harmlessly; the /api/stats
+   * query only counts rows updated in the last few minutes. */
+  private async touchPresence() {
+    if (!this.roomCode) return;
+    const humans = this.game
+      ? [...this.game.players.values()].filter((p) => !p.isBot && p.connected).length
+      : (this.lobby ?? []).filter((p) => !p.isBot && p.connected).length;
+    try {
+      if (humans === 0) {
+        await this.env.DB.prepare("DELETE FROM active_rooms WHERE room_code = ?").bind(this.roomCode).run();
+      } else {
+        await this.env.DB.prepare(
+          "INSERT INTO active_rooms (room_code, player_count, updated_at) VALUES (?, ?, datetime('now')) ON CONFLICT(room_code) DO UPDATE SET player_count = excluded.player_count, updated_at = excluded.updated_at"
+        )
+          .bind(this.roomCode, humans)
+          .run();
+      }
+    } catch {
+      // presence is best-effort; never let it break gameplay
+    }
   }
 
   async fetch(request: Request): Promise<Response> {
@@ -133,17 +158,46 @@ export class MeetingRoom extends DurableObject<Env> {
       if (!att) continue;
       this.send(ws, { type: "reveal", reveal });
     }
+    this.emitBotReactions(reveal);
   }
 
-  private async loadDeck() {
+  /** The bots' table talk about the round that just resolved -- same template system
+   * humans use, so a bot line is indistinguishable in form from a human one. */
+  private emitBotReactions(reveal: RoundReveal) {
+    if (!this.game) return;
+    const playerNames = [...this.game.players.values()].map((p) => p.name);
+    for (const reaction of chooseBotReactions(this.game, reveal)) {
+      const sender = this.game.players.get(reaction.botId);
+      if (!sender) continue;
+      const text = validateAndRenderChat(reaction.templateId, reaction.values, playerNames);
+      if (!text) continue;
+      this.broadcastChat({
+        senderId: sender.id,
+        senderName: sender.name,
+        avatar: sender.avatar ?? "🤖",
+        text,
+        round: reveal.round,
+      });
+    }
+  }
+
+  private broadcastChat(chat: import("../../shared/chat").ChatBroadcast) {
+    for (const ws of this.ctx.getWebSockets()) {
+      const att = ws.deserializeAttachment() as Attachment | null;
+      if (!att) continue;
+      this.send(ws, { type: "chat", chat });
+    }
+  }
+
+  private async loadDeck(transferAmount: number) {
     try {
       const { results } = await this.env.DB.prepare(
-        "SELECT id, attack, sustain, decay FROM card_definitions"
-      ).all<{ id: string; attack: number; sustain: number; decay: number }>();
-      const overrides = new Map(results.map((r) => [r.id, { attack: r.attack, sustain: r.sustain, decay: r.decay }]));
-      return applyOverrides(DEFAULT_DECK, overrides);
+        "SELECT id, sustain, stamina_return FROM card_definitions"
+      ).all<{ id: string; sustain: number; stamina_return: number }>();
+      const overrides = new Map(results.map((r) => [r.id, { sustain: r.sustain, staminaReturn: r.stamina_return }]));
+      return applyTransferAmount(applyOverrides(DEFAULT_DECK, overrides), transferAmount);
     } catch {
-      return DEFAULT_DECK;
+      return applyTransferAmount(DEFAULT_DECK, transferAmount);
     }
   }
 
@@ -159,7 +213,10 @@ export class MeetingRoom extends DurableObject<Env> {
         handSize: map.get("handSize") ?? DEFAULT_CONFIG.handSize,
         roundSafetyCap: map.get("roundSafetyCap") ?? DEFAULT_CONFIG.roundSafetyCap,
         draftDeckSize: map.get("draftDeckSize") ?? DEFAULT_CONFIG.draftDeckSize,
-        pressureThreshold: map.get("pressureThreshold") ?? DEFAULT_CONFIG.pressureThreshold,
+        startingStamina: map.get("startingStamina") ?? DEFAULT_CONFIG.startingStamina,
+        passReward: map.get("passReward") ?? DEFAULT_CONFIG.passReward,
+        approveThreshold: map.get("approveThreshold") ?? DEFAULT_CONFIG.approveThreshold,
+        transferAmount: map.get("transferAmount") ?? DEFAULT_CONFIG.transferAmount,
       };
     } catch {
       return DEFAULT_CONFIG;
@@ -191,8 +248,16 @@ export class MeetingRoom extends DurableObject<Env> {
       await this.handleStart(att.playerId);
     } else if (msg.type === "draft-pick") {
       await this.handleDraftPick(att.playerId, msg.cardId);
+    } else if (msg.type === "draft-auto-pick") {
+      await this.handleDraftAutoPick(att.playerId);
     } else if (msg.type === "commit") {
-      await this.handleCommit(att.playerId, msg.cardId, msg.targetTopic);
+      await this.handleCommit(att.playerId, msg.cardId, msg.attackSpend);
+    } else if (msg.type === "discard-swap") {
+      await this.handleDiscardSwap(att.playerId, msg.cardId);
+    } else if (msg.type === "chat") {
+      this.handleChat(att.playerId, msg.templateId, msg.values);
+    } else if (msg.type === "vote") {
+      await this.handleVote(att.playerId, msg.candidatePlayerId);
     } else if (msg.type === "restart") {
       await this.handleRestart();
     } else if (msg.type === "add-bot") {
@@ -208,6 +273,7 @@ export class MeetingRoom extends DurableObject<Env> {
       player.connected = true;
       ws.serializeAttachment({ playerId } satisfies Attachment);
       await this.saveGame();
+      await this.touchPresence();
       this.send(ws, { type: "state", state: buildClientState(this.game, playerId) });
       return;
     }
@@ -224,7 +290,7 @@ export class MeetingRoom extends DurableObject<Env> {
       existing.name = name || existing.name;
     } else {
       if (this.lobby.length >= MAX_PLAYERS) {
-        this.send(ws, { type: "error", message: "This meeting is full (8 people is already too many)." });
+        this.send(ws, { type: "error", message: `This meeting is full (${MAX_PLAYERS} people is already too many).` });
         return;
       }
       this.lobby.push({ id: playerId, name: name || "New Hire", connected: true, isBot: false });
@@ -232,6 +298,7 @@ export class MeetingRoom extends DurableObject<Env> {
     }
     ws.serializeAttachment({ playerId } satisfies Attachment);
     await this.saveLobby();
+    await this.touchPresence();
     this.broadcastLobby();
   }
 
@@ -264,7 +331,8 @@ export class MeetingRoom extends DurableObject<Env> {
       if (ws) this.send(ws, { type: "error", message: "Need at least 2 people in the meeting to start." });
       return;
     }
-    const [deck, config] = await Promise.all([this.loadDeck(), this.loadConfig()]);
+    const config = await this.loadConfig();
+    const deck = await this.loadDeck(config.transferAmount);
     this.game = beginDraft(
       this.lobby.map((p) => ({ id: p.id, name: p.name, isBot: p.isBot })),
       deck,
@@ -316,9 +384,22 @@ export class MeetingRoom extends DurableObject<Env> {
     await this.advanceDraftWithBots();
   }
 
-  private async handleCommit(playerId: string, cardId: string | null, targetTopic?: Topic) {
+  /** "Choose for me": picks with the same agenda-fit scoring the bots use (which
+   * already falls back to effectively-random via its jitter when nothing stands out). */
+  private async handleDraftAutoPick(playerId: string) {
+    if (!this.game || this.game.phase !== "draft") return;
+    if (draftTurnPlayerId(this.game) !== playerId) {
+      const ws = this.findSocket(playerId);
+      if (ws) this.send(ws, { type: "error", message: "Not your turn to draft." });
+      return;
+    }
+    const cardId = chooseBotDraftPick(this.game, playerId);
+    await this.handleDraftPick(playerId, cardId);
+  }
+
+  private async handleCommit(playerId: string, cardId: string | null, attackSpend?: number) {
     if (!this.game) return;
-    const result = commitCard(this.game, playerId, cardId, targetTopic);
+    const result = commitCard(this.game, playerId, cardId, attackSpend);
     if (!result.ok) {
       const ws = this.findSocket(playerId);
       if (ws) this.send(ws, { type: "error", message: result.error });
@@ -327,10 +408,57 @@ export class MeetingRoom extends DurableObject<Env> {
     await this.advanceWithBots();
   }
 
+  /** Human chat: validate the template + slot values server-side (the anti-free-text
+   * gate lives in shared/chat.ts) and broadcast the rendered line to the whole room. */
+  private handleChat(playerId: string, templateId: string, values: string[]) {
+    let sender: { id: string; name: string; avatar?: string } | undefined;
+    let playerNames: string[];
+    let round = 0;
+    if (this.game) {
+      sender = this.game.players.get(playerId);
+      playerNames = [...this.game.players.values()].map((p) => p.name);
+      round = this.game.round;
+    } else {
+      sender = (this.lobby ?? []).find((p) => p.id === playerId);
+      playerNames = (this.lobby ?? []).map((p) => p.name);
+    }
+    if (!sender) return;
+    const text = validateAndRenderChat(templateId, values, playerNames);
+    if (!text) {
+      const ws = this.findSocket(playerId);
+      if (ws) this.send(ws, { type: "error", message: "That message didn't parse. Try the builder again." });
+      return;
+    }
+    this.broadcastChat({
+      senderId: sender.id,
+      senderName: sender.name,
+      avatar: (sender as { avatar?: string }).avatar ?? "🧑‍💼",
+      text,
+      round,
+    });
+  }
+
+  /** The free once-per-round discard-swap -- doesn't consume the player's turn, so it
+   * only updates and rebroadcasts state; no round advancement is involved. */
+  private async handleDiscardSwap(playerId: string, cardId: string) {
+    if (!this.game) return;
+    const result = discardSwap(this.game, playerId, cardId);
+    if (!result.ok) {
+      const ws = this.findSocket(playerId);
+      if (ws) this.send(ws, { type: "error", message: result.error });
+      return;
+    }
+    await this.saveGame();
+    this.broadcastGameState();
+  }
+
   /** Auto-commits any bot players still pending in the current round, resolves the
    * round once everyone (human + bot) is in, and repeats -- so a room with only one
    * connected human still advances every round without the human touching bot turns.
-   * Chain-resolves multiple rounds in a row only if every remaining player is a bot. */
+   * Chain-resolves multiple rounds in a row only if every remaining player is a bot.
+   * A resolved round can come back as a tie needing a table vote instead of a finished
+   * round -- in that case we hand off to advanceVoteWithBots and, if a human still
+   * needs to vote, stop and wait for them. */
   private async advanceWithBots() {
     if (!this.game) return;
     let guard = 0;
@@ -338,7 +466,7 @@ export class MeetingRoom extends DurableObject<Env> {
       for (const player of this.game.players.values()) {
         if (player.isBot && !this.game.commits.has(player.id)) {
           const choice = chooseBotCommit(this.game, player.id);
-          commitCard(this.game, player.id, choice.cardId, choice.targetTopic);
+          commitCard(this.game, player.id, choice.cardId, choice.attackSpend);
         }
       }
       if (!allCommitted(this.game)) break;
@@ -347,6 +475,12 @@ export class MeetingRoom extends DurableObject<Env> {
       await this.saveGame();
       this.broadcastReveal(reveal);
       this.broadcastGameState();
+      if (this.game.pendingVote) {
+        await this.advanceVoteWithBots();
+        if (this.game.pendingVote) break; // still waiting on a human vote
+        if (this.game.phase !== "commit") break; // the vote ended the game
+        continue;
+      }
       const phaseNow: string = this.game.phase;
       if (phaseNow === "ended") {
         await logMatchEnd(this.env.DB, this.game);
@@ -355,6 +489,56 @@ export class MeetingRoom extends DurableObject<Env> {
     }
     await this.saveGame();
     this.broadcastGameState();
+  }
+
+  /** Auto-casts votes for any bot voters in the current pending tie-vote. Stops as soon
+   * as the vote completes (broadcasting the real round outcome) or as soon as only human
+   * voters remain. */
+  private async advanceVoteWithBots() {
+    if (!this.game || !this.game.pendingVote) return;
+    const vote = this.game.pendingVote;
+    for (const voterId of vote.voterIds) {
+      if (!this.game.pendingVote) return; // already resolved
+      if (vote.votes.some((v) => v.voterId === voterId)) continue;
+      const voter = this.game.players.get(voterId)!;
+      if (!voter.isBot) continue;
+      const candidatePlayerId = chooseBotVote(this.game, voterId, vote.candidates);
+      const result = castVote(this.game, voterId, candidatePlayerId);
+      if (!result.ok) continue;
+      if (result.reveal) {
+        await logRoundEvents(this.env.DB, this.game.matchId, result.reveal);
+        await this.saveGame();
+        this.broadcastReveal(result.reveal);
+        this.broadcastGameState();
+        if (this.game.phase === "ended") {
+          await logMatchEnd(this.env.DB, this.game);
+        }
+        return;
+      }
+    }
+  }
+
+  private async handleVote(playerId: string, candidatePlayerId: string) {
+    if (!this.game) return;
+    const result = castVote(this.game, playerId, candidatePlayerId);
+    if (!result.ok) {
+      const ws = this.findSocket(playerId);
+      if (ws) this.send(ws, { type: "error", message: result.error });
+      return;
+    }
+    await this.saveGame();
+    if (!result.reveal) {
+      this.broadcastGameState();
+      return;
+    }
+    await logRoundEvents(this.env.DB, this.game.matchId, result.reveal);
+    this.broadcastReveal(result.reveal);
+    this.broadcastGameState();
+    if (this.game.phase === "ended") {
+      await logMatchEnd(this.env.DB, this.game);
+      return;
+    }
+    await this.advanceWithBots();
   }
 
   private async handleRestart() {
@@ -387,6 +571,7 @@ export class MeetingRoom extends DurableObject<Env> {
       if (player) {
         player.connected = false;
         await this.saveGame();
+        await this.touchPresence();
         this.broadcastGameState();
       }
     } else if (this.lobby) {
@@ -394,6 +579,7 @@ export class MeetingRoom extends DurableObject<Env> {
       if (player) {
         player.connected = false;
         await this.saveLobby();
+        await this.touchPresence();
         this.broadcastLobby();
       }
     }

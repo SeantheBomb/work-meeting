@@ -6,8 +6,7 @@ export async function logMatchStart(db: D1Database, roomCode: string, state: Gam
     id: p.id,
     name: p.name,
     isBot: p.isBot,
-    hiddenAgendaStance: p.hiddenAgenda.stance,
-    hiddenAgendaTopic: p.hiddenAgenda.topic,
+    agendaCard: p.agendaCard,
   }));
   try {
     await db
@@ -41,11 +40,11 @@ export async function logRoundEvents(db: D1Database, matchId: string, reveal: Ro
           play.playerName,
           play.cardId,
           play.cardName,
-          play.topic,
+          null,
           play.effAttack,
           play.legal ? 1 : 0,
           play.isWinner ? 1 : 0,
-          play.success ? 1 : 0,
+          null,
           null,
           now
         )
@@ -81,11 +80,9 @@ export async function logMatchEnd(db: D1Database, state: GameState) {
   const players = summary.players.map((p) => ({
     id: p.id,
     name: p.name,
-    hiddenAgendaStance: p.hiddenAgenda.stance,
-    hiddenAgendaTopic: p.hiddenAgenda.topic,
-    hiddenAgendaSuccess: p.hiddenAgendaSuccess,
-    creditedApproved: p.creditedApproved,
-    creditedTotal: p.creditedTotal,
+    agendaCard: p.agendaCard,
+    agendaAchievedCount: p.agendaAchievedCount,
+    agendaSuccess: p.agendaSuccess,
   }));
   try {
     await db

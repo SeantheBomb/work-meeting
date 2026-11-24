@@ -1,10 +1,14 @@
-import { CardDef, EndSummary, Floor, GameConfig, GamePhase, HiddenAgenda, LineItem, LogEntry, RoundReveal, Topic } from "./types";
+import { AgendaCard, CardDef, EndSummary, GameConfig, GamePhase, LogEntry, RoundReveal, Topic, TopicState } from "./types";
 
 export type ClientMessage =
   | { type: "join"; playerId: string; name: string }
   | { type: "start" }
   | { type: "draft-pick"; cardId: string }
-  | { type: "commit"; cardId: string | null; targetTopic?: Topic }
+  | { type: "draft-auto-pick" }
+  | { type: "commit"; cardId: string | null; attackSpend?: number }
+  | { type: "discard-swap"; cardId: string }
+  | { type: "chat"; templateId: string; values: string[] }
+  | { type: "vote"; candidatePlayerId: string }
   | { type: "restart" }
   | { type: "add-bot" }
   | { type: "remove-bot"; playerId: string };
@@ -16,22 +20,15 @@ export interface LobbyPlayerView {
   isBot: boolean;
 }
 
-export interface KnownAgendaView {
-  playerId: string;
-  playerName: string;
-  agenda: HiddenAgenda;
-}
-
 export interface YouView {
   id: string;
   name: string;
   hand: CardDef[];
-  hiddenAgenda: HiddenAgenda;
-  decayPenalty: number;
+  agendaCard: AgendaCard;
+  stamina: number;
   drawPileCount: number;
   discardPileCount: number;
-  /** Opponents' Hidden Agendas learned via the Peek side effect this match. */
-  knownAgendas: KnownAgendaView[];
+  avatar: string;
 }
 
 export interface PlayerPublicView {
@@ -40,8 +37,9 @@ export interface PlayerPublicView {
   connected: boolean;
   isBot: boolean;
   handCount: number;
-  decayPenalty: number;
+  stamina: number;
   seat: number;
+  avatar: string;
 }
 
 export interface DraftPickView {
@@ -59,20 +57,48 @@ export interface DraftView {
   recentPicks: DraftPickView[]; // most recent picks across the table, newest last
 }
 
+export interface PendingVoteCandidate {
+  playerId: string;
+  playerName: string;
+  card: CardDef;
+}
+
+export interface PendingVoteCast {
+  voterId: string;
+  voterName: string;
+  candidatePlayerId: string;
+}
+
+/** A tie among top-Attack legal plays. Present only while at least one eligible voter
+ * (anyone whose own card isn't part of the tie) hasn't voted yet. See DESIGN_NOTES.md
+ * section 7 -- ties are settled by table vote instead of always going to the Chair. */
+export interface PendingVoteView {
+  candidates: PendingVoteCandidate[];
+  voterIds: string[];
+  votes: PendingVoteCast[];
+  youAreVoter: boolean;
+  youHaveVoted: boolean;
+}
+
 export interface ClientGameState {
   phase: GamePhase;
   you: YouView;
   players: PlayerPublicView[];
   draft?: DraftView;
-  minutes: Partial<Record<Topic, LineItem>>;
-  floor: Floor | null;
+  pendingVote?: PendingVoteView;
+  /** All 4 Topics, always -- see shared/types.ts. */
+  topics: Record<Topic, TopicState>;
+  /** Whether an Undo card currently has anything to revert -- lets the client preview
+   * the "undo" effect's legality without knowing the actual snapshot contents. */
+  hasUndoTarget: boolean;
   duration: number;
   round: number;
   chairSeat: number;
   fatigue: number;
-  overtimeUses: number;
   log: LogEntry[];
   committedPlayerIds: string[];
+  /** Whether YOU have used this round's one free discard-swap (doesn't consume the turn). */
+  youSwappedThisRound: boolean;
   config: GameConfig;
   endSummary?: EndSummary;
 }
@@ -81,4 +107,5 @@ export type ServerMessage =
   | { type: "lobby"; roomCode: string; players: LobbyPlayerView[]; youId: string; hostId: string }
   | { type: "state"; state: ClientGameState }
   | { type: "reveal"; reveal: RoundReveal }
+  | { type: "chat"; chat: import("./chat").ChatBroadcast }
   | { type: "error"; message: string };

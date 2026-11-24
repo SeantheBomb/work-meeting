@@ -1,17 +1,6 @@
 import { CardDef, GameConfig } from "../../../shared/types";
-import { chooseBotCommit, chooseBotDraftPick } from "../bot";
-import {
-  allCommitted,
-  beginDraft,
-  commitCard,
-  draftPick,
-  draftTurnPlayerId,
-  finalizeDraft,
-  GameState,
-  isDraftComplete,
-  isLegal,
-  resolveRound,
-} from "../engine";
+import { chooseBotCommit, chooseBotDraftPick, chooseBotVote } from "../bot";
+import { allCommitted, beginDraft, castVote, commitCard, draftPick, draftTurnPlayerId, finalizeDraft, GameState, isDraftComplete, isLegal, resolveRound } from "../engine";
 
 export interface MatchStats {
   numPlayers: number;
@@ -28,13 +17,11 @@ export interface MatchStats {
   cardLegalCounts: Map<string, number>;
   cardChosenCounts: Map<string, number>;
   cardWinCounts: Map<string, number>;
-  cardBounceCounts: Map<string, number>;
   playerWinCounts: Map<string, number>;
-  hiddenAgendaAchieverCount: number;
+  agendaSuccessCount: number;
   approveOutcomes: { success: number; total: number };
-  blockOutcomes: { success: number; total: number };
-  overtimeUses: number;
-  bounces: number;
+  rejectOutcomes: { success: number; total: number };
+  fatigue: number;
   hitSafetyCap: boolean;
 }
 
@@ -54,13 +41,11 @@ function emptyStats(numPlayers: number): MatchStats {
     cardLegalCounts: new Map(),
     cardChosenCounts: new Map(),
     cardWinCounts: new Map(),
-    cardBounceCounts: new Map(),
     playerWinCounts: new Map(),
-    hiddenAgendaAchieverCount: 0,
+    agendaSuccessCount: 0,
     approveOutcomes: { success: 0, total: 0 },
-    blockOutcomes: { success: 0, total: 0 },
-    overtimeUses: 0,
-    bounces: 0,
+    rejectOutcomes: { success: 0, total: 0 },
+    fatigue: 0,
     hitSafetyCap: false,
   };
 }
@@ -98,39 +83,50 @@ export function simulateOneMatch(numPlayers: number, deck: CardDef[], config: Ga
 
       const choice = chooseBotCommit(state, player.id);
       if (choice.cardId) bump(stats.cardChosenCounts, choice.cardId);
-      commitCard(state, player.id, choice.cardId, choice.targetTopic);
+      commitCard(state, player.id, choice.cardId, choice.attackSpend);
     }
 
     if (!allCommitted(state)) break;
-    const reveal = resolveRound(state);
+    let reveal = resolveRound(state);
+    // All players are bots in the sim, so a tie-vote always resolves in one pass:
+    // walk the eligible voters in order and cast each bot's vote until it completes.
+    while (state.pendingVote) {
+      const vote = state.pendingVote;
+      const voterId = vote.voterIds.find((v) => !vote.votes.some((cast) => cast.voterId === v));
+      if (!voterId) break;
+      const candidatePlayerId = chooseBotVote(state, voterId, vote.candidates);
+      const result = castVote(state, voterId, candidatePlayerId);
+      if (!result.ok) break;
+      if (result.reveal) {
+        reveal = result.reveal;
+        break;
+      }
+    }
     const winningPlay = reveal.plays.find((p) => p.isWinner);
     if (winningPlay) {
       stats.roundsWithWinner++;
       bump(stats.playerWinCounts, winningPlay.playerId);
-      if (winningPlay.success) bump(stats.cardWinCounts, winningPlay.cardId);
-      else {
-        bump(stats.cardBounceCounts, winningPlay.cardId);
-        stats.bounces++;
-      }
-      if (state.deckById.get(winningPlay.cardId)?.verb === "Overtime") stats.overtimeUses++;
+      bump(stats.cardWinCounts, winningPlay.cardId);
     }
   }
 
   stats.rounds = state.round - 1;
+  stats.fatigue = state.fatigue;
   stats.hitSafetyCap = guard >= 500 || state.endSummary?.reason === "safety-cap";
   if (state.endSummary) {
     stats.sharedAgendaSuccess = state.endSummary.sharedAgendaSuccess;
     stats.approvedCount = state.endSummary.approvedCount;
     stats.endReason = state.endSummary.reason;
-    stats.hiddenAgendaAchieverCount = state.endSummary.players.filter((p) => p.hiddenAgendaSuccess).length;
+    stats.agendaSuccessCount = state.endSummary.players.filter((p) => p.agendaSuccess).length;
     for (const p of state.endSummary.players) {
-      const bucket = p.hiddenAgenda.stance === "Approve" ? stats.approveOutcomes : stats.blockOutcomes;
-      bucket.total++;
-      if (p.hiddenAgendaSuccess) bucket.success++;
+      for (const cell of p.agendaCard) {
+        const bucket = cell.stance === "Approve" ? stats.approveOutcomes : stats.rejectOutcomes;
+        bucket.total++;
+        if (cell.achieved) bucket.success++;
+      }
     }
   } else {
     stats.endReason = "did-not-terminate";
   }
   return stats;
 }
-

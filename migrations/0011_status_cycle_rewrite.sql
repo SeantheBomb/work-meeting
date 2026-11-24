@@ -1,0 +1,23 @@
+-- Back-to-roots rewrite (see DESIGN_NOTES.md section 22): removed Resolve, Pressure,
+-- bounce, and side effects entirely -- winning the round's Attack bid is the only check
+-- there is. Every Topic now moves along a fixed 9-edge cycle (Untouched -> Raised ->
+-- {Approved, Rejected} -> Disputed -> {Tabled, Untouched}, Tabled -> {Approved,
+-- Rejected}), one card per edge per Topic, gated only by that Topic's own current
+-- status. Topic count now also scales with player count (topicsForPlayers in
+-- shared/types.ts). Every card id changed (old requirement-web ids like
+-- "Budget-RaiseNeighbor" are gone, replaced with e.g. "Budget-Raise", "Budget-Approve").
+--
+-- card_definitions is already empty (no seeded overrides), so no data migration needed
+-- there -- old rows, if any existed, would just reference dead ids harmlessly.
+--
+-- handSize needed to go 9 -> 12: with legality now purely "my own Topic's current
+-- Status" (no more cross-Topic/Chair/Stamina requirement web to fall back on), a 9-card
+-- hand had poor odds of ever holding a legal card (sim measured 65.7% zero-legal turns
+-- at 2P). 12 was the sim-validated sweet spot -- enough hand visibility to avoid
+-- starvation without removing hand-management tension entirely (14, tested, overcorrects
+-- into single-card dominance).
+--
+-- pressureThreshold is now vestigial (Pressure no longer exists) -- left in place,
+-- harmless and unused, rather than dropping the column for a config knob nothing reads.
+
+UPDATE game_config SET value = 12 WHERE key = 'handSize';

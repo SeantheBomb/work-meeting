@@ -1,5 +1,5 @@
 import { CardDef } from "../../shared/types";
-import { Commit, GameState, Peek, PlayerState, RemoveEvent } from "./engine";
+import { Commit, GameState, PendingVote, PlayerState, PlaySnapshot } from "./engine";
 
 export interface PersistedGameState {
   matchId: string;
@@ -12,17 +12,17 @@ export interface PersistedGameState {
   draftPickNumber: number;
   draftDeckSize: number;
   draftPicks: GameState["draftPicks"];
-  minutes: GameState["minutes"];
-  floor: GameState["floor"];
+  topics: GameState["topics"];
   duration: number;
   round: number;
   chairSeat: number;
-  overtimeUses: number;
   fatigue: number;
   commits: [string, Commit][];
+  swappedThisRound: string[];
   log: GameState["log"];
-  removeEvents: RemoveEvent[];
-  peeks: Peek[];
+  pendingVote: PendingVote | null;
+  pendingSustainMultiplier: number;
+  lastPlaySnapshot: PlaySnapshot | null;
   endSummary: GameState["endSummary"];
 }
 
@@ -38,17 +38,17 @@ export function toPersisted(state: GameState): PersistedGameState {
     draftPickNumber: state.draftPickNumber,
     draftDeckSize: state.draftDeckSize,
     draftPicks: state.draftPicks,
-    minutes: state.minutes,
-    floor: state.floor,
+    topics: state.topics,
     duration: state.duration,
     round: state.round,
     chairSeat: state.chairSeat,
-    overtimeUses: state.overtimeUses,
     fatigue: state.fatigue,
     commits: [...state.commits.entries()],
+    swappedThisRound: state.swappedThisRound,
     log: state.log,
-    removeEvents: state.removeEvents,
-    peeks: state.peeks,
+    pendingVote: state.pendingVote,
+    pendingSustainMultiplier: state.pendingSustainMultiplier,
+    lastPlaySnapshot: state.lastPlaySnapshot,
     endSummary: state.endSummary,
   };
 }
@@ -65,17 +65,17 @@ export function fromPersisted(p: PersistedGameState): GameState {
     draftPickNumber: p.draftPickNumber,
     draftDeckSize: p.draftDeckSize,
     draftPicks: p.draftPicks,
-    minutes: p.minutes,
-    floor: p.floor,
+    topics: p.topics,
     duration: p.duration,
     round: p.round,
     chairSeat: p.chairSeat,
-    overtimeUses: p.overtimeUses,
     fatigue: p.fatigue,
     commits: new Map(p.commits),
+    swappedThisRound: p.swappedThisRound ?? [],
     log: p.log,
-    removeEvents: p.removeEvents,
-    peeks: p.peeks ?? [],
+    pendingVote: p.pendingVote ?? null,
+    pendingSustainMultiplier: p.pendingSustainMultiplier ?? 1,
+    lastPlaySnapshot: p.lastPlaySnapshot ?? null,
     endSummary: p.endSummary,
   };
 }

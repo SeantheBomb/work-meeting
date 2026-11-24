@@ -22,6 +22,19 @@ export default {
       forwardUrl.searchParams.set("room", roomCode);
       return stub.fetch(new Request(forwardUrl.toString(), request));
     }
+    if (url.pathname === "/api/stats") {
+      // Live "who's playing right now" tracker for the landing page. Rooms heartbeat
+      // their human-player count into active_rooms (see MeetingRoom.touchPresence);
+      // anything not updated recently is a dead room and doesn't count.
+      try {
+        const row = await env.DB.prepare(
+          "SELECT COUNT(*) AS rooms, COALESCE(SUM(player_count), 0) AS players FROM active_rooms WHERE updated_at > datetime('now', '-10 minutes')"
+        ).first<{ rooms: number; players: number }>();
+        return Response.json({ rooms: row?.rooms ?? 0, players: row?.players ?? 0 });
+      } catch {
+        return Response.json({ rooms: 0, players: 0 });
+      }
+    }
     return env.ASSETS.fetch(request);
   },
 } satisfies ExportedHandler<Env>;
